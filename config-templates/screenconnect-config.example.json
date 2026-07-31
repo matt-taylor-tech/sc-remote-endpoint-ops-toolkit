@@ -1,0 +1,6 @@
+{
+  "_comment": "The shared secret authorizes ALL extension endpoints on this ScreenConnect instance, including command execution. Never commit the real value to source control.",
+  "url": "https://<your-instance>.screenconnect.com",
+  "extension_id": "2d558935-686a-4bd0-9991-07539f5fe749",
+  "auth_secret": "<SCREENCONNECT_RESTFUL_SHARED_SECRET>"
+}
