@@ -64,6 +64,48 @@ For CI, cron, or a serverless runner, set `SC_URL` and `SC_AUTH_SECRET` (plus op
 4. Any mounted `*/mnt/Configs/screenconnect-config.json` (the Cowork folder-mount convention - connect a folder containing this file)
 5. `~/.config/screenconnect/screenconnect-config.json` - what `setup` and the hook write
 
+## Network access
+
+The skill calls your ScreenConnect instance over HTTPS from wherever it runs, so
+that environment has to be able to reach the host.
+
+Inside Cowork, it often can't. Cowork sessions send outbound traffic through an
+egress proxy with an allowlist, and a private ScreenConnect instance is not on
+it. Both the cloud session and the desktop VM are affected. The symptom is a
+failure at connect time, before anything reaches ScreenConnect:
+
+```
+ERROR: nothing reached the instance, so the secret was never tested.
+  could not reach https://example.screenconnect.com - Tunnel connection failed: 403 Forbidden
+```
+
+That is the sandbox, not your secret. `setup` distinguishes the two: a blocked
+host reports as above, while a bad secret reports the status the instance
+actually returned.
+
+Options:
+
+1. **Allowlist the host.** On Team and Enterprise plans, Organization settings >
+   Capabilities > Code execution controls network egress. Add your ScreenConnect
+   domain there. Note that as of September 2026 there are open reports of this
+   setting not being applied to Cowork sessions, so confirm it took effect rather
+   than assuming.
+2. **Run the scripts directly.** They are plain Python 3 with no dependencies, so
+   they work from an ordinary terminal on a machine that can reach your instance:
+
+   ```bash
+   cd path/to/sc-remote-endpoint-ops-toolkit
+   python3 skills/screenconnect/scripts/sc.py setup --url <instance> --secret '<secret>'
+   python3 skills/screenconnect/scripts/sc.py GetSessionsByName "DESKTOP-ABC123"
+   ```
+
+   Quote the secret in single quotes. Shared secrets frequently contain `&`, `!`
+   or `$`, which the shell will otherwise interpret.
+
+Web search, web fetch, and MCP connectors are not subject to the egress
+allowlist. If the restriction turns out to be permanent in your environment, an
+MCP server is the shape that reaches a private instance from inside a session.
+
 ## Installing as a Cowork/Claude Code plugin
 
 This repo is set up as its own plugin marketplace (`.claude-plugin/marketplace.json`), so it installs directly from GitHub, no zip file, no manual copying.

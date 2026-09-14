@@ -33,6 +33,15 @@ This writes `~/.config/screenconnect/screenconnect-config.json` (mode 0600) and 
 
 If the plugin was installed with its user config filled in, a session-start hook writes that file automatically, so this only comes up when the user configured nothing.
 
+## If the host is unreachable
+
+`could not reach ... Tunnel connection failed` or a 403 at CONNECT means the
+environment's network allowlist blocked the request before it left. The secret was
+never tested, so do not tell the user their credentials are wrong and do not prompt
+them for new ones. Say the sandbox cannot reach the host, and point at the "Network
+access" section of the plugin README: either the domain gets allowlisted, or the
+scripts get run from a terminal that can reach the instance.
+
 ## Finding a machine
 
 `<id>` for `run` accepts a sessionID GUID, a serial number, or a machine name; it resolves automatically. Placeholder serials ("System Serial Number", blank, long numeric defaults) are ignored, so name matching is used for custom-built PCs. Reset/reprovisioned machines leave duplicate sessions: for a lookup, the online/most-recently-active one is used (with a note). For `run`, if more than one matching session is online the target is ambiguous and the command is refused - pass the specific sessionID. If all matches are offline, `run` errors rather than sending into the void.

@@ -221,16 +221,20 @@ def do_setup(args):
     path = os.path.expanduser(path)
 
     if verify:
-        probe = Client(cfg)
         try:
-            probe.call("GetSessionsByFilter", ["Name = '__sc_setup_probe__'"])
-        except SystemExit as e:
-            sys.exit("ERROR: those credentials did not work, nothing was written.\n"
-                     + str(e))
-        except Exception as e:
-            sys.exit("ERROR: could not reach " + cfg["url"] + " - " + str(e)[:200]
-                     + "\nNothing was written. Check the URL, or pass --no-verify "
-                     "to save anyway.")
+            Client(cfg).request("GetSessionsByFilter", ["Name = '__sc_setup_probe__'"])
+        except SCError as e:
+            if e.kind == "network":
+                sys.exit("ERROR: nothing reached the instance, so the secret was never "
+                         "tested. Nothing was written.\n  " + str(e) + "\n\n"
+                         "A 403 at CONNECT or 'Tunnel connection failed' means a sandbox "
+                         "network\nallowlist blocked the host before the request left - "
+                         "not a bad secret.\nSee 'Network access' in the plugin README. "
+                         "Pass --no-verify to save anyway.")
+            sys.exit("ERROR: the instance rejected the request, nothing was written.\n  "
+                     + str(e) + "\n\nCheck the RESTfulAuthenticationSecret and that the "
+                     "RESTful API Manager extension\nis installed. Pass --no-verify to "
+                     "save anyway.")
 
     write_config(cfg, path)
     if not quiet:
@@ -240,6 +244,15 @@ def do_setup(args):
         print("  auth_secret:  " + ("*" * 8) + " (" + str(len(secret)) + " chars)")
         if verify:
             print("Verified against the instance.")
+
+
+class SCError(Exception):
+    """kind is 'http' (the instance answered with an error) or 'network'
+    (nothing reached the instance)."""
+
+    def __init__(self, kind, message):
+        super().__init__(message)
+        self.kind = kind
 
 
 class Client:
@@ -252,7 +265,8 @@ class Client:
             "Origin": cfg.get("origin", self.base),
         }
 
-    def call(self, method, body):
+    def request(self, method, body):
+        """Raise SCError on failure. Use call() for the exit-on-error behavior."""
         url = self.base + "/App_Extensions/" + self.ext + "/Service.ashx/" + method
         req = urllib.request.Request(url, data=json.dumps(body).encode(),
                                      method="POST", headers=self.headers)
@@ -261,9 +275,16 @@ class Client:
                 return r.read().decode("utf-8", "replace")
         except urllib.error.HTTPError as e:
             detail = e.read().decode("utf-8", "replace")[:500]
-            sys.exit("ERROR: " + str(e.code) + " " + method + "\n" + detail)
+            raise SCError("http", str(e.code) + " " + method + "\n" + detail)
         except urllib.error.URLError as e:
-            sys.exit("ERROR: could not reach " + self.base + " - " + str(e.reason)[:200])
+            raise SCError("network",
+                          "could not reach " + self.base + " - " + str(e.reason)[:200])
+
+    def call(self, method, body):
+        try:
+            return self.request(method, body)
+        except SCError as e:
+            sys.exit("ERROR: " + str(e))
 
     def call_json(self, method, body):
         txt = self.call(method, body).strip()
