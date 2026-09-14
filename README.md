@@ -1,4 +1,6 @@
-# screenconnect plugin
+# ScreenConnect API
+
+A Claude/Cowork plugin for querying and managing ScreenConnect sessions.
 
 Query and lightly manage ScreenConnect (ConnectWise Control) sessions from Claude/Cowork, via the RESTful API Manager extension. No MCP server or hosting required - this is a skill (SKILL.md + Python scripts) that calls the extension's HTTP endpoint directly from the sandbox each time it runs.
 
@@ -35,7 +37,7 @@ To change them later, edit the plugin's configuration in your client and start a
 If no config exists, every command exits with a "not configured yet" message that tells Claude to ask you for the URL and secret and then run:
 
 ```bash
-python3 skills/sessions/scripts/sc.py setup --url https://<your-instance>.screenconnect.com --secret <secret>
+python3 skills/screenconnect/scripts/sc.py setup --url https://<your-instance>.screenconnect.com --secret <secret>
 ```
 
 `setup` verifies the credentials against your instance before it writes anything, then saves them to `~/.config/screenconnect/screenconnect-config.json` (mode 0600). Add `--origin <value>` if `RESTfulAllowedOrigin` is set, `--path <file>` to write elsewhere, `--no-verify` to skip the check.
@@ -87,4 +89,8 @@ Either way, you still need the config step above (`screenconnect-config.json` or
 - `CreateSession` is blocked client-side by `sc.py`; everything else the extension exposes is reachable, gated by the plugin's own destructive-command denylist and confirm-first guidance in SKILL.md.
 - The plugin never uses ticket/asset text as command input - commands must come from the operator in chat. Keep that discipline if you extend this.
 - Optional integrations (Freshservice ticket notes, a Supabase `command_runs` audit table) degrade gracefully: if their config isn't present, those features no-op instead of erroring. You can ignore them entirely if you don't use those systems.
-- Not included: a company-specific "can't print" network-triage check that existed in the source environment. It depended on that org's internal network documentation and a Freshservice printer-asset export. See `skills/sessions/SKILL.md` for the pattern if you want to build an equivalent for your own site inventory.
+- Not included: a company-specific "can't print" network-triage check that existed in the source environment. It depended on that org's internal network documentation and a Freshservice printer-asset export. See `skills/screenconnect/SKILL.md` for the pattern if you want to build an equivalent for your own site inventory.
+
+## Trademark
+
+ScreenConnect and ConnectWise are trademarks of ConnectWise, LLC. This is an independent, unofficial project. It is not affiliated with, endorsed by, sponsored by, or supported by ConnectWise, and the name is used only to describe the product this plugin talks to.

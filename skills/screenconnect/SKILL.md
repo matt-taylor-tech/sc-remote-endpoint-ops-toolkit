@@ -1,5 +1,5 @@
 ---
-name: sessions
+name: screenconnect
 description: Queries, manages, and troubleshoots ScreenConnect (ConnectWise Control) remote support and access sessions, including running diagnostic commands, read-only health checks, and pulling chat transcripts from endpoints. Use whenever the user asks about ScreenConnect, Control, remote sessions, who is connected, whether a machine is online, support session history, machine hardware/OS/serial/uptime info, the chat history of a session, OR wants to troubleshoot a machine by pulling event logs, diagnosing sound/audio issues, diagnosing OneDrive sync issues, checking network/driver errors, running a command, sending a message, or renaming a session. Trigger on phrases like "ScreenConnect", "remote session", "is this machine online", "run a command on", "event logs from", "chat history", "session chat", "sound not working", "audio issue", "OneDrive not syncing", "troubleshoot her computer", "diagnose this machine", "uptime on".
 ---
 

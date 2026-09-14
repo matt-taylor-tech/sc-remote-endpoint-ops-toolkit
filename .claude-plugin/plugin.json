@@ -1,10 +1,13 @@
 {
   "name": "sc-remote-endpoint-ops-toolkit",
+  "displayName": "ScreenConnect API",
   "version": "0.1.0",
   "description": "Query, manage, and troubleshoot ScreenConnect (ConnectWise Control) sessions via the RESTful API Manager extension. Machine lookups, command execution with output capture, read-only diagnostic playbooks (event logs, sound, OneDrive, network, health, memory, drivers, battery), and chat-transcript retrieval. Optional auto-logging of commands/output/chat as private redacted notes on a Freshservice ticket.",
   "author": {
     "name": "Matt Taylor"
   },
+  "homepage": "https://github.com/matt-taylor-tech/sc-remote-endpoint-ops-toolkit",
+  "repository": "https://github.com/matt-taylor-tech/sc-remote-endpoint-ops-toolkit",
   "keywords": [
     "screenconnect",
     "connectwise-control",

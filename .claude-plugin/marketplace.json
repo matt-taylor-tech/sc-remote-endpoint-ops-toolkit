@@ -6,8 +6,19 @@
   "plugins": [
     {
       "name": "sc-remote-endpoint-ops-toolkit",
+      "displayName": "ScreenConnect API",
       "source": "./",
-      "description": "Query, manage, and troubleshoot ScreenConnect (ConnectWise Control) sessions via the RESTful API Manager extension. Machine lookups, command execution with output capture, read-only diagnostic playbooks, and chat-transcript retrieval."
+      "description": "Query, manage, and troubleshoot ScreenConnect (ConnectWise Control) sessions via the RESTful API Manager extension. Machine lookups, command execution with output capture, read-only diagnostic playbooks, and chat-transcript retrieval.",
+      "category": "remote-support",
+      "keywords": [
+        "screenconnect",
+        "connectwise-control",
+        "remote-support",
+        "rmm",
+        "sessions",
+        "msp"
+      ],
+      "homepage": "https://github.com/matt-taylor-tech/sc-remote-endpoint-ops-toolkit"
     }
   ]
 }
