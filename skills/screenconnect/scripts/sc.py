@@ -52,9 +52,9 @@ import os
 import re
 import sys
 import time
+import urllib.error
 import urllib.request
 
-import requests
 
 READ_METHODS = [
     "GetSessionBySessionID",
@@ -257,7 +257,8 @@ def fs_config():
     don't use Freshservice (or use a different ITSM), leave this unconfigured; --ticket will
     just skip the note with a message on stderr."""
     p = _find_first(["/sessions/*/mnt/Configs/freshservice.config.json",
-                     "/sessions/*/mnt/.remote-plugins/*/config/freshservice.config.json"])
+                     "/sessions/*/mnt/.remote-plugins/*/config/freshservice.config.json",
+                     os.path.expanduser("~/.config/screenconnect/freshservice.config.json")])
     if not p:
         return None
     try:
@@ -327,10 +328,16 @@ class Client:
 
     def call(self, method, body):
         url = self.base + "/App_Extensions/" + self.ext + "/Service.ashx/" + method
-        r = requests.post(url, headers=self.headers, data=json.dumps(body), timeout=90)
-        if not r.ok:
-            sys.exit("ERROR: " + str(r.status_code) + " " + method + "\n" + r.text[:500])
-        return r.text
+        req = urllib.request.Request(url, data=json.dumps(body).encode(),
+                                     method="POST", headers=self.headers)
+        try:
+            with urllib.request.urlopen(req, timeout=90) as r:
+                return r.read().decode("utf-8", "replace")
+        except urllib.error.HTTPError as e:
+            detail = e.read().decode("utf-8", "replace")[:500]
+            sys.exit("ERROR: " + str(e.code) + " " + method + "\n" + detail)
+        except urllib.error.URLError as e:
+            sys.exit("ERROR: could not reach " + self.base + " - " + str(e.reason)[:200])
 
     def call_json(self, method, body):
         txt = self.call(method, body).strip()
@@ -406,7 +413,8 @@ def _supabase_url():
     u = os.environ.get("SUPABASE_DB_URL")
     if u:
         return u
-    p = _find_first(["/sessions/*/mnt/Configs/supabase.config.json"])
+    p = _find_first(["/sessions/*/mnt/Configs/supabase.config.json",
+                     os.path.expanduser("~/.config/screenconnect/supabase.config.json")])
     if p:
         try:
             return json.load(open(p)).get("db_url")

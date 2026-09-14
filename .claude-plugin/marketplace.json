@@ -8,6 +8,7 @@
       "name": "sc-remote-endpoint-ops-toolkit",
       "displayName": "ScreenConnect API",
       "source": "./",
+      "version": "0.1.0",
       "description": "Query, manage, and troubleshoot ScreenConnect (ConnectWise Control) sessions via the RESTful API Manager extension. Machine lookups, command execution with output capture, read-only diagnostic playbooks, and chat-transcript retrieval.",
       "category": "remote-support",
       "keywords": [
@@ -18,7 +19,8 @@
         "sessions",
         "msp"
       ],
-      "homepage": "https://github.com/matt-taylor-tech/sc-remote-endpoint-ops-toolkit"
+      "homepage": "https://github.com/matt-taylor-tech/sc-remote-endpoint-ops-toolkit",
+      "license": "MIT"
     }
   ]
 }

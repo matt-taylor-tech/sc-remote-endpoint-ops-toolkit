@@ -2,7 +2,7 @@
 
 A Claude/Cowork plugin for querying and managing ScreenConnect sessions.
 
-Query and lightly manage ScreenConnect (ConnectWise Control) sessions from Claude/Cowork, via the RESTful API Manager extension. No MCP server or hosting required - this is a skill (SKILL.md + Python scripts) that calls the extension's HTTP endpoint directly from the sandbox each time it runs.
+Query and lightly manage ScreenConnect (ConnectWise Control) sessions from Claude/Cowork, via the RESTful API Manager extension. No MCP server or hosting required - this is a skill (SKILL.md + Python scripts) that calls the extension's HTTP endpoint directly from the sandbox each time it runs. Python 3 standard library only - nothing to `pip install`.
 
 ## Scope
 

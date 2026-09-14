@@ -8,6 +8,7 @@
   },
   "homepage": "https://github.com/matt-taylor-tech/sc-remote-endpoint-ops-toolkit",
   "repository": "https://github.com/matt-taylor-tech/sc-remote-endpoint-ops-toolkit",
+  "license": "MIT",
   "keywords": [
     "screenconnect",
     "connectwise-control",
