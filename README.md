@@ -22,7 +22,27 @@ Optional: if you use Freshservice for ticketing, `run`/`chat` can auto-post a pr
 
 ## Configuration
 
-Create `screenconnect-config.json`:
+You need two values: your instance URL and the `RESTfulAuthenticationSecret` from the step above. There are three ways to supply them, in the order most people will want them.
+
+### 1. Plugin user config (easiest)
+
+If you installed this as a plugin, the client prompts for **ScreenConnect URL** and **RESTful API secret** when you enable it. The secret is masked and kept in the OS keychain (or `~/.claude/.credentials.json`), not in this repo and not in your settings file. A `SessionStart` hook (`hooks/write-config.py`) writes those values to `~/.config/screenconnect/screenconnect-config.json` with mode 0600 at the start of each session, which is what the skill actually reads. Nothing else to do.
+
+To change them later, edit the plugin's configuration in your client and start a new session.
+
+### 2. Just tell Claude
+
+If no config exists, every command exits with a "not configured yet" message that tells Claude to ask you for the URL and secret and then run:
+
+```bash
+python3 skills/sessions/scripts/sc.py setup --url https://<your-instance>.screenconnect.com --secret <secret>
+```
+
+`setup` verifies the credentials against your instance before it writes anything, then saves them to `~/.config/screenconnect/screenconnect-config.json` (mode 0600). Add `--origin <value>` if `RESTfulAllowedOrigin` is set, `--path <file>` to write elsewhere, `--no-verify` to skip the check.
+
+### 3. By hand (env vars or a config file)
+
+For CI, cron, or a serverless runner, set `SC_URL` and `SC_AUTH_SECRET` (plus optional `SC_EXTENSION_ID`, `SC_ORIGIN`). Or write the file yourself:
 
 ```json
 {
@@ -36,12 +56,11 @@ Create `screenconnect-config.json`:
 
 **Config discovery order** (`scripts/sc.py`, first match wins):
 
-1. `SC_URL` + `SC_AUTH_SECRET` env vars (+ optional `SC_EXTENSION_ID`, `SC_ORIGIN`) - good for CI/serverless
-2. `SC_CONFIG` env var - path to a `screenconnect-config.json` file
-3. Any mounted `*/mnt/Configs/screenconnect-config.json` (the Cowork folder-mount convention - connect a folder containing this file)
-4. `~/.config/screenconnect/screenconnect-config.json` - local fallback
-
-Pick whichever fits how you're running this (Cowork with a connected Configs folder is simplest for interactive use; env vars for anything scripted/scheduled).
+1. `SC_URL` + `SC_AUTH_SECRET` env vars (+ optional `SC_EXTENSION_ID`, `SC_ORIGIN`)
+2. `CLAUDE_PLUGIN_OPTION_SC_*` - plugin user config, when the host exports it
+3. `SC_CONFIG` env var - path to a `screenconnect-config.json` file
+4. Any mounted `*/mnt/Configs/screenconnect-config.json` (the Cowork folder-mount convention - connect a folder containing this file)
+5. `~/.config/screenconnect/screenconnect-config.json` - what `setup` and the hook write
 
 ## Installing as a Cowork/Claude Code plugin
 

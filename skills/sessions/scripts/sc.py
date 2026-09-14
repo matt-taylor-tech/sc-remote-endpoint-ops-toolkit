@@ -31,11 +31,19 @@ Two ways to use it:
    target is ambiguous and the command is refused - pass the specific sessionID.
    Placeholder serials (e.g. "System Serial Number") are ignored; use the name.
 
+3. setup - write a config file so the rest of the commands work:
+     python3 sc.py setup --url https://<instance>.screenconnect.com --secret <secret>
+   Writes ~/.config/screenconnect/screenconnect-config.json (mode 0600) and verifies
+   the credentials against the instance. Use --path to write somewhere else,
+   --no-verify to skip the check. With no flags it reads the values from the
+   environment, which is how the SessionStart hook materializes plugin user config.
+
 Config discovery (first match wins):
   1. SC_URL + SC_AUTH_SECRET env vars (+ optional SC_EXTENSION_ID, SC_ORIGIN)
-  2. SC_CONFIG env var (path to a screenconnect-config.json)
-  3. Any mounted */mnt/Configs/screenconnect-config.json (Cowork folder mount convention)
-  4. ~/.config/screenconnect/screenconnect-config.json (local fallback)
+  2. CLAUDE_PLUGIN_OPTION_SC_* (plugin user config, when the host exports it)
+  3. SC_CONFIG env var (path to a screenconnect-config.json)
+  4. Any mounted */mnt/Configs/screenconnect-config.json (Cowork folder mount convention)
+  5. ~/.config/screenconnect/screenconnect-config.json (written by 'setup')
 """
 import base64
 import glob
@@ -98,16 +106,53 @@ def is_identifying_serial(s):
     return True
 
 
+DEFAULT_EXTENSION_ID = "2d558935-686a-4bd0-9991-07539f5fe749"
+USER_CONFIG_PATH = os.path.expanduser(
+    "~/.config/screenconnect/screenconnect-config.json")
+
+NOT_CONFIGURED = """ScreenConnect is not configured yet.
+
+Ask the user for their ScreenConnect URL and the RESTfulAuthenticationSecret set on
+the RESTful API Manager extension, then run:
+
+  python3 {script} setup --url https://<instance>.screenconnect.com --secret <secret>
+
+Alternatives: set SC_URL + SC_AUTH_SECRET, point SC_CONFIG at a config file, or
+connect a folder containing Configs/screenconnect-config.json. If this plugin was
+installed with user config filled in, restart the session so the hook can write it."""
+
+
+def _env_value(name):
+    """Read SC_<NAME>, falling back to the plugin user config the host exports."""
+    return (os.environ.get(name)
+            or os.environ.get("CLAUDE_PLUGIN_OPTION_" + name)
+            or "").strip()
+
+
+def _env_config():
+    url, secret = _env_value("SC_URL"), _env_value("SC_AUTH_SECRET")
+    if not (url and secret):
+        return None
+    cfg = {"url": normalize_url(url),
+           "extension_id": _env_value("SC_EXTENSION_ID") or DEFAULT_EXTENSION_ID,
+           "auth_secret": secret}
+    origin = _env_value("SC_ORIGIN")
+    if origin:
+        cfg["origin"] = origin
+    return cfg
+
+
+def normalize_url(url):
+    url = url.strip().rstrip("/")
+    if not url.startswith(("http://", "https://")):
+        url = "https://" + url
+    return url
+
+
 def find_config():
-    # Inline env first (Azure Function / CI): SC_URL + SC_AUTH_SECRET
-    # (+ optional SC_EXTENSION_ID, SC_ORIGIN).
-    if os.environ.get("SC_URL") and os.environ.get("SC_AUTH_SECRET"):
-        cfg = {"url": os.environ["SC_URL"],
-               "extension_id": os.environ.get("SC_EXTENSION_ID",
-                                              "2d558935-686a-4bd0-9991-07539f5fe749"),
-               "auth_secret": os.environ["SC_AUTH_SECRET"]}
-        if os.environ.get("SC_ORIGIN"):
-            cfg["origin"] = os.environ["SC_ORIGIN"]
+    # Inline env first (CI / serverless), then plugin user config, then files.
+    cfg = _env_config()
+    if cfg:
         return cfg
     candidates = []
     env = os.environ.get("SC_CONFIG")
@@ -115,14 +160,87 @@ def find_config():
         candidates.append(env)
     candidates += sorted(glob.glob(
         "/sessions/*/mnt/Configs/screenconnect-config.json"))
-    candidates.append(os.path.expanduser(
-        "~/.config/screenconnect/screenconnect-config.json"))
+    candidates.append(USER_CONFIG_PATH)
     for c in candidates:
         if c and os.path.isfile(c):
             with open(c) as f:
                 return json.load(f)
-    sys.exit("ERROR: screenconnect-config.json not found. Set SC_URL+SC_AUTH_SECRET, "
-             "set SC_CONFIG to a file path, or place one at ~/.config/screenconnect/.")
+    sys.exit("ERROR: " + NOT_CONFIGURED.format(script=sys.argv[0]))
+
+
+def write_config(cfg, path):
+    """Write a config file with owner-only permissions."""
+    d = os.path.dirname(path)
+    if d:
+        os.makedirs(d, exist_ok=True)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        json.dump(cfg, f, indent=2)
+        f.write("\n")
+    os.chmod(path, 0o600)
+
+
+def do_setup(args):
+    """Write screenconnect-config.json from flags (or the environment)."""
+    usage = ("usage: sc.py setup --url <https://instance.screenconnect.com> "
+             "--secret <RESTfulAuthenticationSecret> [--extension-id <guid>] "
+             "[--origin <origin>] [--path <file>] [--no-verify] [--quiet]")
+    opts = {"--url": None, "--secret": None, "--extension-id": None,
+            "--origin": None, "--path": None}
+    verify, quiet = True, False
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a == "--no-verify":
+            verify = False; i += 1
+        elif a == "--quiet":
+            quiet = True; i += 1
+        elif a in opts:
+            if i + 1 >= len(args):
+                sys.exit("ERROR: " + a + " needs a value\n" + usage)
+            opts[a] = args[i + 1]; i += 2
+        else:
+            sys.exit("ERROR: unknown argument " + a + "\n" + usage)
+
+    url = opts["--url"] or _env_value("SC_URL")
+    secret = opts["--secret"] or _env_value("SC_AUTH_SECRET")
+    if not (url and secret):
+        if quiet:
+            return  # hook path: nothing configured, stay silent
+        sys.exit("ERROR: --url and --secret are required (or set SC_URL and "
+                 "SC_AUTH_SECRET in the environment).\n" + usage)
+
+    cfg = {"url": normalize_url(url),
+           "extension_id": (opts["--extension-id"] or _env_value("SC_EXTENSION_ID")
+                            or DEFAULT_EXTENSION_ID),
+           "auth_secret": secret}
+    origin = opts["--origin"] or _env_value("SC_ORIGIN")
+    if origin:
+        cfg["origin"] = origin
+
+    path = opts["--path"] or os.environ.get("SC_CONFIG") or USER_CONFIG_PATH
+    path = os.path.expanduser(path)
+
+    if verify:
+        probe = Client(cfg)
+        try:
+            probe.call("GetSessionsByFilter", ["Name = '__sc_setup_probe__'"])
+        except SystemExit as e:
+            sys.exit("ERROR: those credentials did not work, nothing was written.\n"
+                     + str(e))
+        except Exception as e:
+            sys.exit("ERROR: could not reach " + cfg["url"] + " - " + str(e)[:200]
+                     + "\nNothing was written. Check the URL, or pass --no-verify "
+                     "to save anyway.")
+
+    write_config(cfg, path)
+    if not quiet:
+        print("Wrote " + path + " (mode 0600)")
+        print("  url:          " + cfg["url"])
+        print("  extension_id: " + cfg["extension_id"])
+        print("  auth_secret:  " + ("*" * 8) + " (" + str(len(secret)) + " chars)")
+        if verify:
+            print("Verified against the instance.")
 
 
 def _find_first(patterns):
@@ -452,6 +570,9 @@ def raw_call(client, method, args):
 def main():
     if len(sys.argv) < 2:
         sys.exit(__doc__)
+    if sys.argv[1] == "setup":
+        do_setup(sys.argv[2:])
+        return
     client = Client(find_config())
 
     if sys.argv[1] == "chat":

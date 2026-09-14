@@ -10,5 +10,31 @@
     "connectwise-control",
     "remote-support",
     "sessions"
-  ]
+  ],
+  "userConfig": {
+    "SC_URL": {
+      "type": "string",
+      "title": "ScreenConnect URL",
+      "description": "Base URL of your ScreenConnect instance, e.g. https://example.screenconnect.com",
+      "required": true
+    },
+    "SC_AUTH_SECRET": {
+      "type": "string",
+      "title": "RESTful API secret",
+      "description": "The RESTfulAuthenticationSecret set on the RESTful API Manager extension (Admin > Extensions). This authorizes every method the extension exposes, including remote command execution, so treat it like a master password.",
+      "sensitive": true,
+      "required": true
+    },
+    "SC_EXTENSION_ID": {
+      "type": "string",
+      "title": "Extension GUID",
+      "description": "RESTful API Manager extension GUID. The default matches the standard marketplace extension; only change it if yours differs.",
+      "default": "2d558935-686a-4bd0-9991-07539f5fe749"
+    },
+    "SC_ORIGIN": {
+      "type": "string",
+      "title": "Allowed origin (optional)",
+      "description": "Only needed if RESTfulAllowedOrigin is set on the extension. Leave blank otherwise."
+    }
+  }
 }

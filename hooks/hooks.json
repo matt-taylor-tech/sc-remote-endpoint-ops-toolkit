@@ -1,0 +1,17 @@
+{
+  "description": "Writes the ScreenConnect config from the plugin's user config at session start",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/write-config.py"],
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}
