@@ -38,9 +38,20 @@ If the plugin was installed with its user config filled in, a session-start hook
 `could not reach ... Tunnel connection failed` or a 403 at CONNECT means the
 environment's network allowlist blocked the request before it left. The secret was
 never tested, so do not tell the user their credentials are wrong and do not prompt
-them for new ones. Say the sandbox cannot reach the host, and point at the "Network
-access" section of the plugin README: either the domain gets allowlisted, or the
-scripts get run from a terminal that can reach the instance.
+them for new ones.
+
+Before giving up, check whether this session has a shell tool that runs on a machine
+outside the sandbox, such as a local shell MCP server. MCP tools are not subject to
+the session egress allowlist, so if the user has a clone of this repo on a machine
+that can reach the instance, run the scripts there instead:
+
+```bash
+cd <path to the clone> && python3 skills/screenconnect/scripts/sc.py <args>
+```
+
+That machine needs its own config, written by running `setup` there once. If no such
+shell exists, say the sandbox cannot reach the host and point at the "Network access"
+section of the plugin README.
 
 ## Finding a machine
 

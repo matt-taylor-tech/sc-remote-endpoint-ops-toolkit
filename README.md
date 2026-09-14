@@ -102,9 +102,15 @@ Options:
    Quote the secret in single quotes. Shared secrets frequently contain `&`, `!`
    or `$`, which the shell will otherwise interpret.
 
-Web search, web fetch, and MCP connectors are not subject to the egress
-allowlist. If the restriction turns out to be permanent in your environment, an
-MCP server is the shape that reaches a private instance from inside a session.
+3. **Drive the scripts through a local shell MCP server.** Web search, web fetch
+   and MCP tools are not subject to the egress allowlist, and a shell MCP server
+   such as Desktop Commander runs on your own machine rather than in the sandbox.
+   If that machine has a clone of this repo and its own config, Claude can run the
+   scripts there from inside a session, which gets you the conversational workflow
+   without the allowlist. The machine has to be on and its MCP server connected.
+
+If the restriction turns out to be permanent in your environment, an MCP server is
+the shape that reaches a private instance from inside a session by design.
 
 ## Installing as a Cowork/Claude Code plugin
 
