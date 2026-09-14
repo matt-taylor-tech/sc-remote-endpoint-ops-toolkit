@@ -45,7 +45,22 @@ Pick whichever fits how you're running this (Cowork with a connected Configs fol
 
 ## Installing as a Cowork/Claude Code plugin
 
-This directory is already laid out as a plugin (`.claude-plugin/plugin.json` + `skills/sessions/`). Zip it and install it the same way you'd install any other Claude plugin, or point Claude at the unzipped directory and ask it to install/register it locally.
+This repo is set up as its own plugin marketplace (`.claude-plugin/marketplace.json`), so it installs directly from GitHub, no zip file, no manual copying.
+
+**In Cowork:**
+
+1. Open **Customize** in the sidebar, then **Plugins**.
+2. Select **Add marketplace** and enter `matt-taylor-tech/sc-remote-endpoint-ops-toolkit`.
+3. Install **sc-remote-endpoint-ops-toolkit** from that marketplace.
+
+**In Claude Code (CLI):**
+
+```
+/plugin marketplace add matt-taylor-tech/sc-remote-endpoint-ops-toolkit
+/plugin install sc-remote-endpoint-ops-toolkit@sc-remote-endpoint-ops-toolkit
+```
+
+Either way, you still need the config step above (`screenconnect-config.json` or `SC_URL`/`SC_AUTH_SECRET`) before the skill can actually reach your ScreenConnect instance - installing the plugin only adds the skill, it doesn't prompt for or store the secret.
 
 ## Notes
 
