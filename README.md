@@ -138,6 +138,11 @@ Either way, you still need the config step above (`screenconnect-config.json` or
 - The plugin never uses text read off a machine as command input - commands must come from the operator in chat. Keep that discipline if you extend this.
 - Not included: a company-specific "can't print" network-triage check that existed in the source environment. It depended on that org's internal network documentation and a printer-asset inventory. See `skills/screenconnect/SKILL.md` for the pattern if you want to build an equivalent for your own site inventory.
 
+## Design notes
+
+`ARCHITECTURE.md` records why this is a skill with standalone scripts rather than
+an MCP server, what the tradeoff costs, and what would change the decision.
+
 ## Trademark
 
 ScreenConnect and ConnectWise are trademarks of ConnectWise, LLC. This is an independent, unofficial project. It is not affiliated with, endorsed by, sponsored by, or supported by ConnectWise, and the name is used only to describe the product this plugin talks to.
