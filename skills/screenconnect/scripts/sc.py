@@ -12,10 +12,10 @@ Two ways to use it:
 
      python3 sc.py GetSessionsByName "ACE-LT067"
      python3 sc.py GetSessionsByFilter "GuestMachineSerialNumber = '7GXL8S3'"
-     python3 sc.py AddNoteToSession "<sessionID>" "Patched per ticket #1234"
+     python3 sc.py AddNoteToSession "<sessionID>" "Reimaged and rejoined to domain"
 
-   chat - post a session's chat transcript to a ticket as a private note:
-     python3 sc.py chat <sessionID|serial|machineName> --ticket 1234 [--since <iso8601>]
+   chat - print a session's chat transcript:
+     python3 sc.py chat <sessionID|serial|machineName> [--since <iso8601>]
 
 2. run - send a command and wait for its output (the raw API is fire-and-forget;
    output returns asynchronously as a session event, so this polls for it):
@@ -45,7 +45,6 @@ Config discovery (first match wins):
   4. Any mounted */mnt/Configs/screenconnect-config.json (Cowork folder mount convention)
   5. ~/.config/screenconnect/screenconnect-config.json (written by 'setup')
 """
-import base64
 import glob
 import json
 import os
@@ -243,79 +242,6 @@ def do_setup(args):
             print("Verified against the instance.")
 
 
-def _find_first(patterns):
-    hits = []
-    for pat in patterns:
-        hits += glob.glob(pat)
-    hits.sort(key=lambda x: (0 if ".remote-plugins" in x else 1, len(x)))
-    return hits[0] if hits else None
-
-
-def fs_config():
-    """OPTIONAL: Freshservice api_key/domain, only used if you want run/chat --ticket to
-    post a note back to a Freshservice ticket. Everything else works without this. If you
-    don't use Freshservice (or use a different ITSM), leave this unconfigured; --ticket will
-    just skip the note with a message on stderr."""
-    p = _find_first(["/sessions/*/mnt/Configs/freshservice.config.json",
-                     "/sessions/*/mnt/.remote-plugins/*/config/freshservice.config.json",
-                     os.path.expanduser("~/.config/screenconnect/freshservice.config.json")])
-    if not p:
-        return None
-    try:
-        return json.load(open(p))
-    except Exception:
-        return None
-
-
-# Secret patterns scrubbed from any text before it is written to a ticket note.
-_REDACT = [
-    re.compile(r"\b\d{6}(?:-\d{6}){5,7}\b"),                       # BitLocker recovery key
-    (re.compile(r"(?i)(net\s+user\s+\S+\s+)(\S+)"), r"\1[REDACTED]"),  # net user <name> <password>
-    re.compile(r"(?i)(password|passwd|pwd|secret|token|api[_-]?key|client[_-]?secret|recoverypassword)\s*[:=]\s*\S+"),
-    re.compile(r"(?i)authorization:\s*\S+\s*\S*"),
-    re.compile(r"\b[A-Fa-f0-9]{32,}\b"),                            # long hex (hashes/keys)
-    re.compile(r"\b[A-Za-z0-9+/]{40,}={0,2}\b"),                    # long base64 (tokens/certs)
-]
-
-
-def redact(text):
-    t = text or ""
-    for rx in _REDACT:
-        if isinstance(rx, tuple):
-            t = rx[0].sub(rx[1], t)
-        else:
-            t = rx.sub("[REDACTED]", t)
-    return t
-
-
-def post_ticket_note(ticket_id, body, private=True, dry_run=False):
-    """POST a (private by default) note to a Freshservice ticket. Body is redacted by caller."""
-    m = re.search(r"(\d+)", str(ticket_id))
-    if not m:
-        sys.stderr.write("NOTE SKIPPED: could not parse ticket id from " + str(ticket_id) + "\n")
-        return
-    num = m.group(1)
-    if dry_run:
-        sys.stderr.write("--- DRY-RUN ticket note (ticket " + num + ", private=" + str(private) + ") ---\n"
-                         + body + "\n--- end note ---\n")
-        return
-    cfg = fs_config()
-    if not cfg or not cfg.get("api_key"):
-        sys.stderr.write("NOTE SKIPPED: Freshservice config not found.\n")
-        return
-    tok = base64.b64encode((cfg["api_key"] + ":X").encode()).decode()
-    url = "https://" + cfg["domain"] + "/api/v2/tickets/" + num + "/notes"
-    # notify_emails empty so the note NEVER tags or notifies any agent/watcher.
-    payload = json.dumps({"body": body, "private": bool(private), "notify_emails": []}).encode()
-    req = urllib.request.Request(url, data=payload, method="POST",
-                                 headers={"Authorization": "Basic " + tok, "Content-Type": "application/json"})
-    try:
-        with urllib.request.urlopen(req, timeout=30) as r:
-            sys.stderr.write("ticket note posted to " + num + " (private=" + str(private) + ", HTTP " + str(r.status) + ")\n")
-    except Exception as e:
-        sys.stderr.write("NOTE FAILED for " + num + ": " + str(e)[:160] + "\n")
-
-
 class Client:
     def __init__(self, cfg):
         self.base = cfg["url"].rstrip("/")
@@ -407,44 +333,6 @@ def resolve_session(client, ident, for_command=False):
     return chosen["SessionID"], chosen.get("Name", ident)
 
 
-def _supabase_url():
-    """OPTIONAL: only used for a best-effort audit log of commands run (command_runs
-    table). Skipped silently if unset - not required for the plugin to work."""
-    u = os.environ.get("SUPABASE_DB_URL")
-    if u:
-        return u
-    p = _find_first(["/sessions/*/mnt/Configs/supabase.config.json",
-                     os.path.expanduser("~/.config/screenconnect/supabase.config.json")])
-    if p:
-        try:
-            return json.load(open(p)).get("db_url")
-        except Exception:
-            return None
-    return None
-
-
-def log_command_run(sid, name, shell, command, output, succeeded):
-    """Best-effort audit row in Supabase command_runs. Never raises - logging must
-    not break the command path. Output is secret-redacted. device_id/ticket_id left
-    null (crosswalk is a follow-up). source/operator from env when present."""
-    url = _supabase_url()
-    if not url:
-        return
-    try:
-        import psycopg2
-        cmd = (command or "").replace("#!ps\n", "").replace("#!\n", "")
-        conn = psycopg2.connect(url)
-        conn.autocommit = True
-        conn.cursor().execute(
-            "insert into command_runs (screenconnect_session_id, operator, shell, command, "
-            "output_redacted, succeeded, source) values (%s,%s,%s,%s,%s,%s,%s)",
-            (sid, os.environ.get("SC_OPERATOR"), shell, cmd[:8000],
-             redact(output or "")[:16000], bool(succeeded), "sc.py"))
-        conn.close()
-    except Exception:
-        pass
-
-
 def capture_command(client, sid, command, shell="powershell", timeout=25):
     """Send a command to a session and return its captured output (or None on
     timeout). Read-only convenience for playbooks that need a quick value (e.g.
@@ -467,7 +355,7 @@ def capture_command(client, sid, command, shell="powershell", timeout=25):
     return None
 
 
-def run_command(client, ident, command, shell, timeout, force, ticket=None, note_dry=False):
+def run_command(client, ident, command, shell, timeout, force):
     if DESTRUCTIVE.search(command) and not force:
         sys.exit("REFUSED: command matches destructive pattern and --force not given:\n  " + command
                  + "\nRe-run with --force only if you are certain. Consider the ScreenConnect host page instead.")
@@ -489,19 +377,7 @@ def run_command(client, ident, command, shell, timeout, force, ticket=None, note
             joined = "\n".join(e.get("Data", "") for e in outputs)
             print("# session " + name + " (" + sid + ")")
             print(joined)
-            log_command_run(sid, name, shell, command, joined, True)
-            if ticket:
-                import datetime
-                clean = redact(joined)
-                note = ("[Automated note via Cowork/ScreenConnect - "
-                        + datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC") + "]\n"
-                        + "Machine: " + str(name) + " (session " + sid + ")\n"
-                        + "Command (" + shell + "):\n  " + command.replace("#!ps\n", "").replace("#!\n", "") + "\n\n"
-                        + "Output:\n" + (clean[:6000] + ("\n...[truncated]" if len(clean) > 6000 else ""))
-                        + "\n\n(secrets auto-redacted)")
-                post_ticket_note(ticket, note, private=True, dry_run=note_dry)
             return
-    log_command_run(sid, name, shell, command, "(timeout: no output captured)", False)
     sys.exit("TIMEOUT: no command output after " + str(timeout)
              + "s. Machine may be offline or the command is still running. "
              "Check the session in ScreenConnect.")
@@ -529,10 +405,9 @@ def get_chat(client, sid, since=None):
 
 # Stable marker in the chat-capture note header, so a resolve-then-close (or webhook retry)
 # can detect an already-posted transcript and not double-post (issue #47).
-CHAT_CAPTURE_MARKER = "ScreenConnect chat capture"
 
 
-def chat_command(client, ident, ticket=None, note_dry=False, since=None):
+def chat_command(client, ident, since=None):
     sid, name = resolve_session(client, ident, for_command=False)
     msgs = get_chat(client, sid, since=since)
     if not msgs:
@@ -543,14 +418,6 @@ def chat_command(client, ident, ticket=None, note_dry=False, since=None):
     transcript = "\n".join(lines)
     print("# chat transcript - " + name + " (" + sid + ")")
     print(transcript)
-    if ticket:
-        import datetime
-        note = ("[" + CHAT_CAPTURE_MARKER + " via agent - "
-                + datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC") + "]\n"
-                + "Machine: " + str(name)
-                + (("  (since " + str(since)[:19] + ")") if since else "") + "\n\n"
-                + redact(transcript) + "\n\n(secrets auto-redacted)")
-        post_ticket_note(ticket, note, private=True, dry_run=note_dry)
 
 
 def raw_call(client, method, args):
@@ -585,26 +452,21 @@ def main():
 
     if sys.argv[1] == "chat":
         rest = sys.argv[2:]
-        ticket, note_dry = None, False
         pos = []
         i = 0
         since = None
         while i < len(rest):
-            if rest[i] == "--ticket":
-                ticket = rest[i + 1]; i += 2
-            elif rest[i] == "--since":
+            if rest[i] == "--since":
                 since = rest[i + 1]; i += 2
-            elif rest[i] == "--dry-run-note":
-                note_dry = True; i += 1
             else:
                 pos.append(rest[i]); i += 1
         if not pos:
-            sys.exit("usage: sc.py chat <sessionID|serial|machineName> [--ticket <id>] [--since <iso8601>] [--dry-run-note]")
-        chat_command(client, pos[0], ticket, note_dry, since=since)
+            sys.exit("usage: sc.py chat <sessionID|serial|machineName> [--since <iso8601>]")
+        chat_command(client, pos[0], since=since)
         return
     if sys.argv[1] == "run":
         rest = sys.argv[2:]
-        shell, timeout, force, ticket, note_dry = "cmd", 60, False, None, False
+        shell, timeout, force = "cmd", 60, False
         pos = []
         i = 0
         while i < len(rest):
@@ -615,16 +477,12 @@ def main():
                 timeout = int(rest[i + 1]); i += 2
             elif a == "--force":
                 force = True; i += 1
-            elif a == "--ticket":
-                ticket = rest[i + 1]; i += 2
-            elif a == "--dry-run-note":
-                note_dry = True; i += 1
             else:
                 pos.append(a); i += 1
         if len(pos) < 2:
             sys.exit("usage: sc.py run <sessionID|serial|machineName> \"<command>\" "
-                     "[--shell powershell|cmd] [--timeout 60] [--force] [--ticket <id>] [--dry-run-note]")
-        run_command(client, pos[0], pos[1], shell, timeout, force, ticket, note_dry)
+                     "[--shell powershell|cmd] [--timeout 60] [--force]")
+        run_command(client, pos[0], pos[1], shell, timeout, force)
         return
 
     raw_call(client, sys.argv[1], sys.argv[2:])

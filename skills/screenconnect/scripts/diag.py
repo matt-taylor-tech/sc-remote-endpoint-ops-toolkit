@@ -251,7 +251,7 @@ def main():
     if len(args) < 2:
         sys.exit(__doc__)
     check, target = args[0], args[1]
-    days, provider, timeout, ticket, dry = 7, None, None, None, False
+    days, provider, timeout = 7, None, None
     i = 2
     while i < len(args):
         if args[i] == "--days":
@@ -260,10 +260,6 @@ def main():
             provider = args[i + 1]; i += 2
         elif args[i] == "--timeout":
             timeout = int(args[i + 1]); i += 2
-        elif args[i] == "--ticket":
-            ticket = args[i + 1]; i += 2
-        elif args[i] == "--dry-run-note":
-            dry = True; i += 1
         else:
             i += 1
     if check not in BUILDERS:

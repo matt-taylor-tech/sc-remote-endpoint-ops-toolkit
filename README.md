@@ -13,7 +13,7 @@ Query and lightly manage ScreenConnect (ConnectWise Control) sessions from Claud
 - Chat transcript retrieval
 - Blocked by client: CreateSession
 
-Optional: if you use Freshservice for ticketing, `run`/`chat` can auto-post a private, redacted note to a ticket via `--ticket <id>`. Without a Freshservice config, this is silently skipped and everything else works normally.
+ScreenConnect is the only system this touches. There are no ticketing, database, or other third-party integrations, and the only credential it needs is the one below.
 
 ## One-time setup on ScreenConnect
 
@@ -87,9 +87,8 @@ Either way, you still need the config step above (`screenconnect-config.json` or
 
 - Auth is a single shared-secret header (`CTRLAuthHeader`). It authorizes every method on the extension - there is no per-user or read-vs-write scoping at the ScreenConnect API layer. Anyone who can reach this config can run commands on any session. Store the secret like any other credential (not in source control, restrict who can read the config file).
 - `CreateSession` is blocked client-side by `sc.py`; everything else the extension exposes is reachable, gated by the plugin's own destructive-command denylist and confirm-first guidance in SKILL.md.
-- The plugin never uses ticket/asset text as command input - commands must come from the operator in chat. Keep that discipline if you extend this.
-- Optional integrations (Freshservice ticket notes, a Supabase `command_runs` audit table) degrade gracefully: if their config isn't present, those features no-op instead of erroring. You can ignore them entirely if you don't use those systems.
-- Not included: a company-specific "can't print" network-triage check that existed in the source environment. It depended on that org's internal network documentation and a Freshservice printer-asset export. See `skills/screenconnect/SKILL.md` for the pattern if you want to build an equivalent for your own site inventory.
+- The plugin never uses text read off a machine as command input - commands must come from the operator in chat. Keep that discipline if you extend this.
+- Not included: a company-specific "can't print" network-triage check that existed in the source environment. It depended on that org's internal network documentation and a printer-asset inventory. See `skills/screenconnect/SKILL.md` for the pattern if you want to build an equivalent for your own site inventory.
 
 ## Trademark
 
