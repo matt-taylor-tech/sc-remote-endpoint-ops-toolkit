@@ -24,6 +24,9 @@ Two ways to use it:
      python3 sc.py run ACE-LT067 "Get-EventLog -LogName System -Newest 20" --shell powershell
 
    --force is required for commands matching the destructive denylist.
+   --timeout also sets the agent's own kill timer (#timeout=), and output is
+   allowed up to 100000 characters (#maxlength=); without these the agent
+   kills a command at 10 s and truncates output at 5000 characters.
 
    Resolution: a sessionID GUID targets exactly that session. A serial or
    machine name may match several sessions (reset/reprovisioned machines leave
@@ -354,12 +357,23 @@ def resolve_session(client, ident, for_command=False):
     return chosen["SessionID"], chosen.get("Name", ident)
 
 
+# The agent kills a command after 10 s and cuts its output at 5000 characters
+# unless the command opens with #timeout=<ms> / #maxlength=<chars> lines, so every
+# command carries both, with the agent timeout matched to how long we poll.
+MAX_OUTPUT_CHARS = 100000
+
+
+def wrap_command(command, shell, timeout):
+    head = "#!ps\n" if shell == "powershell" else ""  # cmd is the default interpreter
+    return (head + "#timeout=" + str(int(timeout) * 1000) + "\n"
+            + "#maxlength=" + str(MAX_OUTPUT_CHARS) + "\n" + command)
+
+
 def capture_command(client, sid, command, shell="powershell", timeout=25):
     """Send a command to a session and return its captured output (or None on
     timeout). Read-only convenience for playbooks that need a quick value (e.g.
     current Wi-Fi SSID). Does not log/post - caller decides."""
-    if shell == "powershell":
-        command = "#!ps\n" + command
+    command = wrap_command(command, shell, timeout)
     try:
         before = {e["EventID"] for e in client.call_json("GetSessionDetailsBySessionID", [sid])["Events"]}
         client.call("SendCommandToSession", [sid, command])
@@ -381,9 +395,7 @@ def run_command(client, ident, command, shell, timeout, force):
         sys.exit("REFUSED: command matches destructive pattern and --force not given:\n  " + command
                  + "\nRe-run with --force only if you are certain. Consider the ScreenConnect host page instead.")
     sid, name = resolve_session(client, ident, for_command=True)
-    if shell == "powershell":
-        command = "#!ps\n" + command
-    # cmd is the default interpreter for plain command text; no prefix needed
+    command = wrap_command(command, shell, timeout)
 
     before = {e["EventID"] for e in client.call_json("GetSessionDetailsBySessionID", [sid])["Events"]}
     client.call("SendCommandToSession", [sid, command])
