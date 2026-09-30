@@ -34,17 +34,26 @@ To push anyway, for example a README-only fix you judge not worth a version:
 git push --no-verify
 ```
 
-## Testing without a live instance
+## Tests
 
-`sc.py` talks to one HTTP endpoint, so a small local stub is enough to exercise
-`run`, `chat`, and session resolution without touching a real ScreenConnect
-instance. Point it at the stub with `SC_CONFIG`:
+The tests run `sc.py` against a local stub of the RESTful API Manager extension
+(`tests/stub.py`), so they need no ScreenConnect instance, no network and no
+packages:
 
 ```bash
-python3 skills/screenconnect/scripts/sc.py setup \
-  --url http://127.0.0.1:8932 --secret test --path /tmp/cfg.json --no-verify
-SC_CONFIG=/tmp/cfg.json python3 skills/screenconnect/scripts/sc.py run DESKTOP-ABC123 "ipconfig /all"
+python3 -m unittest discover -s tests -v
 ```
+
+Add a test for every bug fixed and every option added. The stub plays the
+instance; a responder function plays the endpoint (see `PushEndpoint` in
+`tests/test_sc.py` for one that decodes the scripts `push` sends).
+
+The stub can't tell you how a real agent behaves (interpreter quirks, exit codes,
+ACLs, antivirus), so also try anything that changes what gets sent to an endpoint
+against a machine you control before you push.
+
+Keep it generic: this repo is public. No client names, hostnames, IPs, paths or
+session IDs in code, tests, docs or commit messages.
 
 ## Scope
 

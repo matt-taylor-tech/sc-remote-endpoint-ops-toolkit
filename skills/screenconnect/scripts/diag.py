@@ -7,6 +7,7 @@ a machine by serial, machine name, or sessionID (same resolution as sc.py).
 
 Usage:
   python3 diag.py <check> <serial|name|sessionID> [--days N] [--provider NAME] [--timeout S]
+  (On Windows, run it with `python` or `py -3`.)
 
 Checks (all READ-ONLY):
   eventlogs  Error/warning triage grouped by source over N days (default 7).
@@ -246,7 +247,16 @@ BUILDERS = {
 }
 
 
+def utf8_stdio():
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass
+
+
 def main():
+    utf8_stdio()
     args = sys.argv[1:]
     if len(args) < 2:
         sys.exit(__doc__)
@@ -254,14 +264,25 @@ def main():
     days, provider, timeout = 7, None, None
     i = 2
     while i < len(args):
-        if args[i] == "--days":
-            days = int(args[i + 1]); i += 2
-        elif args[i] == "--provider":
-            provider = args[i + 1]; i += 2
-        elif args[i] == "--timeout":
-            timeout = int(args[i + 1]); i += 2
+        flag = args[i]
+        if flag in ("--days", "--provider", "--timeout"):
+            if i + 1 >= len(args):
+                sys.exit("ERROR: " + flag + " needs a value")
+            value = args[i + 1]
+            if flag == "--provider":
+                provider = value
+            else:
+                try:
+                    n = int(value)
+                except ValueError:
+                    sys.exit("ERROR: " + flag + " needs a number, got '" + value + "'")
+                if flag == "--days":
+                    days = n
+                else:
+                    timeout = n
+            i += 2
         else:
-            i += 1
+            sys.exit("ERROR: unknown option " + flag)
     if check not in BUILDERS:
         sys.exit("unknown check '" + check + "'. Options: " + ", ".join(BUILDERS))
     if check == "eventlogs":
@@ -270,8 +291,13 @@ def main():
         builder, default_to = BUILDERS[check]
         ps = builder()
     to = timeout or default_to
-    r = subprocess.run(["python3", SC, "run", target, ps, "--shell", "powershell", "--timeout", str(to)],
-                       capture_output=True, text=True, timeout=to + 20)
+    # sys.executable, not "python3": on Windows python3 is often missing or the Store stub.
+    # --no-exit-code: these playbooks report findings; a failed probe inside one isn't a
+    # failure of the check.
+    r = subprocess.run([sys.executable, SC, "run", target, ps, "--shell", "powershell",
+                        "--timeout", str(to), "--no-exit-code"],
+                       capture_output=True, text=True, encoding="utf-8", errors="replace",
+                       timeout=to + 30)
     sys.stdout.write(r.stdout)
     if r.returncode != 0:
         sys.stderr.write(r.stderr)
