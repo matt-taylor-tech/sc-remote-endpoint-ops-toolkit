@@ -81,6 +81,15 @@ python3 sc.py run DESKTOP-ABC123 "wmic qfe list brief" --timeout 90
 
 Mechanics: `SendCommandToSession` is fire-and-forget; output returns asynchronously as a session event (EventType 70). `run` sends, then polls GetSessionDetailsBySessionID and prints the captured stdout (typically back in ~5s). Default interpreter is cmd; `--shell powershell` prepends the `#!ps` directive. `--timeout` default 60s; raise it for slow commands. A timeout usually means the machine is offline or the command is long-running.
 
+The agent on its own kills a command after 10 s ("Killed after 10000 milliseconds.") and cuts output at 5000 characters ("Truncated output at 5000 characters."). `run` prevents both by opening every command with `#timeout=<--timeout in ms>` and `#maxlength=100000` directive lines, so raise `--timeout` rather than working around a kill. For work longer than a few minutes, start it detached (`Start-Process powershell -ArgumentList ... -WindowStyle Hidden`) writing to a file on the endpoint, then poll that file with short `run` calls.
+
+### Pitfalls when scripting `run`
+
+- **Don't print captured output with zsh `echo`.** zsh's `echo` interprets backslash escapes, so `out=$(python3 sc.py run ...); echo "$out"` turns `C:\Users\...` into `C: sers`, `\temp` into a tab and `\new` into a newline, and makes a correct path in an error message look mangled. Use `printf '%s\n' "$out"`, or write the output to a file. `sc.py` itself sends and prints backslashes intact.
+- **Quoting.** A command passes through the local shell, JSON and then the endpoint's interpreter. For PowerShell, wrap the whole command in single quotes locally and use double quotes inside. If you need a literal `"` inside a double-quoted PowerShell string, use `[char]34` instead of trying to escape it.
+- **Multi-line scripts.** Base64-encode the script locally, write it on the endpoint with `[IO.File]::WriteAllBytes('C:\Windows\Temp\x.ps1',[Convert]::FromBase64String('...'))` and run it with `-File`. This avoids every quoting layer. Some endpoint AV (Defender on workstations) flags this pattern; on those, send the logic inline instead.
+- **The polled file might not exist yet.** A detached script that writes its results at the end leaves nothing to read until it finishes, so treat "cannot find path" as "still running" and keep polling for an end marker the script writes last.
+
 ## Chat transcripts
 
 ScreenConnect chat is in the session events: type 45 = technician message (Host field = tech name), type 71 = guest/end-user message, type 70 = command output (distinct from chat). Pull a session's full chat:
