@@ -7,7 +7,16 @@
 #   ./tools/bump-version.sh 1.4.2     set explicitly
 set -euo pipefail
 cd "$(dirname "$0")/.."
-python3 - "${1:-patch}" <<'PY'
+# On Windows `python3` is often a Microsoft Store placeholder, so find one that runs.
+PY=""
+for candidate in python3 python "py -3"; do
+  if $candidate -c "import sys; sys.exit(sys.version_info[0] != 3)" >/dev/null 2>&1; then
+    PY=$candidate
+    break
+  fi
+done
+[ -n "$PY" ] || { echo "bump-version: no Python 3 found (tried python3, python, py -3)" >&2; exit 1; }
+$PY - "${1:-patch}" <<'PY'
 import json, re, sys
 from collections import OrderedDict
 

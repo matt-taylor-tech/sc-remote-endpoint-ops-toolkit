@@ -6,8 +6,13 @@ Query and lightly manage ScreenConnect (ConnectWise Control) sessions from Claud
 
 ## Scope
 
-- Reads: session lookup by name, serial, or ID; full session details with event history; uptime from LastBootTime
-- Commands: `run <id> "<command>"` sends a command and waits for stdout (EventType 70 polling). cmd by default, `--shell powershell` supported. Destructive commands are denylisted behind `--force`.
+- Reads: session lookup by name, serial, or ID; full session details with event history; uptime from LastBootTime; `online` to see which machines (all, or a list you give it) are connected
+- Commands: `run <id> "<command>"` sends a command and waits for its output. The remote exit code becomes the script's exit code. cmd by default on Windows, `sh` on Mac/Linux, `--shell powershell` supported. `--file <path>` (or `-` for stdin) sends a script file as written, with no shell quoting in the way.
+- `run-many` runs one command across a list of machines, paced, with a per-machine summary
+- `push` copies a file (up to a few MB) to a Windows endpoint in chunks and verifies its SHA-256 there
+- `run --detach` starts a long job as a one-off SYSTEM scheduled task on a Windows endpoint; `job` reads its log and exit code, waits for it, or cleans it up
+- A denylist of risky commands (disk, deletion, restarts, accounts, disabling Defender or the firewall, enabling RDP, clearing logs, and more), each overridable per category with `--allow <category>` once the operator has confirmed
+- A local audit log of what was sent where, recording hashes, never command text
 - Actions (confirm-first): add note, send on-screen message, rename session, update custom properties
 - Read-only diagnostic playbooks (`diag.py`): event logs, sound, OneDrive, network, health, memory, drivers, battery
 - Chat transcript retrieval
@@ -131,10 +136,39 @@ This repo is set up as its own plugin marketplace (`.claude-plugin/marketplace.j
 
 Either way, you still need the config step above (`screenconnect-config.json` or `SC_URL`/`SC_AUTH_SECRET`) before the skill can actually reach your ScreenConnect instance - installing the plugin only adds the skill, it doesn't prompt for or store the secret.
 
+## Scripting with sc.py
+
+On Windows, run the scripts with `python` (or `py -3`); `python3` is often missing there.
+
+### Exit codes
+
+| Code | Meaning |
+| --- | --- |
+| 0-123 | The remote command's own exit code (0 when it can't be determined, for example when the script ends with `exit`) |
+| 2 | Usage error |
+| 124 | Timed out, or the agent killed the command (raise `--timeout`, or use `--detach`) |
+| 125 | Target not found, offline, ambiguous, or disconnected while the command ran |
+| 126 | Refused by the denylist |
+| 255 | Config, network or API error |
+
+`run-many` and `online` exit 0 when every target succeeded and 1 otherwise.
+
+### Quoting
+
+A command given on the command line passes through your local shell, and some shells (and some tool wrappers) eat backslashes, so `\\server\share` can arrive as `\server\share`. Put anything with backslashes, quotes or several lines in a file and use `--file`.
+
+### Rate limits
+
+Reads are retried with backoff on 429/502/503/504, and a session lookup that comes back empty is retried before `sc.py` reports "not found", because a busy instance can answer that way. Commands are never re-sent on an ambiguous failure, so nothing runs twice. For many machines, use `run-many` rather than a tight loop.
+
+### Audit log
+
+Every command-sending action (run, run-many, push, detach, job cleanup, and raw action methods) appends a JSON line to `~/.config/screenconnect/audit.log`: time, target, session, the SHA-256 and length of what was sent, and the result. Command text and output are never written, because they can contain secrets. Set `SC_AUDIT_LOG=<path>` to move it or `SC_AUDIT_LOG=off` to turn it off. Keep in mind that ScreenConnect itself stores every command and its output in the session's event history on the server.
+
 ## Notes
 
 - Auth is a single shared-secret header (`CTRLAuthHeader`). It authorizes every method on the extension - there is no per-user or read-vs-write scoping at the ScreenConnect API layer. Anyone who can reach this config can run commands on any session. Store the secret like any other credential (not in source control, restrict who can read the config file).
-- `CreateSession` is blocked client-side by `sc.py`; everything else the extension exposes is reachable, gated by the plugin's own destructive-command denylist and confirm-first guidance in SKILL.md.
+- `CreateSession` is blocked client-side by `sc.py`; everything else the extension exposes is reachable, gated by the plugin's own denylist (which also covers raw `SendCommandToSession` calls) and confirm-first guidance in SKILL.md. The denylist matches command text, so it's a safety net for mistakes, not a security boundary against someone who holds the secret.
 - The plugin never uses text read off a machine as command input - commands must come from the operator in chat. Keep that discipline if you extend this.
 - Not included: a company-specific "can't print" network-triage check that existed in the source environment. It depended on that org's internal network documentation and a printer-asset inventory. See `skills/screenconnect/SKILL.md` for the pattern if you want to build an equivalent for your own site inventory.
 
