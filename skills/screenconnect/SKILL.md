@@ -94,6 +94,8 @@ The agent on its own kills a command after 10 s ("Killed after 10000 millisecond
 
 **Exit codes.** `run` appends one line that prints the command's exit status, strips it from the output, and exits with it: 0-123 is the remote command's own code, 124 means timed out or killed, 125 means the machine wasn't found, was ambiguous, or went offline while you waited, 126 means the denylist refused it, 2 is a usage error and 255 a config/network/API error. So a failing command is visible from the exit code alone; report it rather than reading "some output came back" as success. `--no-exit-code` sends the command untouched.
 
+**No exit code is not a success.** If the output ends with "NOTE: exit code not reported", the exit-code line never ran. Usually that's a PowerShell `throw` (or any terminating error under `$ErrorActionPreference = 'Stop'`), which stops the script before the line `run` appended. `run` still exits 0 in that case, so read the output; `run-many` lists such machines as `unknown` and doesn't count them as succeeded.
+
 **Timeouts and disconnects are reported differently.** On a timeout `run` rechecks the session: "TIMEOUT ... still online" means the command is probably still running; "OFFLINE ... disconnected" means the machine dropped while you waited and the command may or may not have run. Don't retry blindly after either; check first.
 
 ### Scripts, quoting and files
@@ -101,6 +103,14 @@ The agent on its own kills a command after 10 s ("Killed after 10000 millisecond
 - **Anything with backslashes, quotes or more than one line goes in a file: `run <id> --file script.ps1`** (or pipe it in with `-`). A `.ps1` file implies `--shell powershell`. Passing a command as an argument sends it through the local shell's quoting, and some shells and tool wrappers eat backslashes, so `\\server\share` can arrive as `\server\share` and look like a network fault on the endpoint. Write the file with a file-editing tool rather than a shell heredoc, for the same reason.
 - **Don't print captured output with zsh `echo`.** zsh's `echo` interprets backslash escapes, so `out=$(python3 sc.py run ...); echo "$out"` turns `C:\Users\...` into `C: sers`. Use `printf '%s\n' "$out"`, or write the output to a file. `sc.py` itself sends and prints backslashes intact.
 - **Copying a file to a Windows endpoint: `push <id> <localfile> <C:\absolute\path>`.** It sends the file in chunks, then checks the SHA-256 on the endpoint before moving it into place, and refuses to replace an existing file without `--overwrite`. Default cap 5 MB (`--max-mb`); each chunk is one command, so for large files have the endpoint download from somewhere instead. Some endpoint AV products flag the base64-write pattern `push` uses.
+- **The same backslash problem hits `sc.py`'s own arguments**, not just commands. A `push` destination in a shell loop such as `"C:\\Temp\\Files\\$f.txt"` can arrive as `C:\Temp\Files$f.txt`: the `\\` collapses, then `\$` escapes the variable, so every iteration writes the same literal file, and with `--overwrite` each replaces the last. The hash check still passes, because each file did arrive intact at the wrong path. For more than one call with Windows paths, write a small Python script (with a file-editing tool) that calls `sc.py` through `subprocess.run([...])` with raw-string arguments, or use a PowerShell shell, where `\` isn't an escape character. Read the `Pushed ... -> <path>` line back each time.
+
+### Windows gotchas when running as SYSTEM
+
+- **`whoami /groups` doesn't show the computer's domain groups.** SYSTEM's token is local, so "is this PC in AD group X" comes back False on every machine. Use `gpresult /scope computer /r` (the groups Group Policy saw at the last refresh) or `klist -li 0x3e7`.
+- **`gpupdate /force` can stop and ask "OK to restart? (Y/N)"** and wait until the timeout. Send `cmd /c "echo N| gpupdate /target:computer /force"`.
+- **`powershell.exe -File script.ps1 -Name 'a','b'` doesn't make an array**: with `-File`, arguments arrive as plain strings (`a,` and `b`). When a parameter takes a list, use `powershell.exe -Command "& 'script.ps1' -Name 'a','b'"`, or call the script from a `--file` wrapper.
+- **Nested arrays flatten in PowerShell:** `@( @('a','b') <newline> @('c','d') )` is four strings, not two pairs. Write each inner array with a leading comma: `,@('a','b')`.
 
 ### Long jobs
 
@@ -114,7 +124,7 @@ The task unregisters itself when the command finishes; the files stay until you 
 
 ### Several machines
 
-`run-many <id1,id2,...> "<command>"` (or `@file` with one target per line) runs the same command on each machine in turn, pausing `--pace` seconds (default 2) between them, prints each machine's output, and ends with a summary table. It checks the denylist once, before anything is sent. Use it instead of a shell loop: a tight loop of lookups can make the instance return empty results, which looks like "no session found".
+`run-many <id1,id2,...> "<command>"` (or `@file` with one target per line) runs the same command on each machine in turn, pausing `--pace` seconds (default 2) between them, prints each machine's output, and ends with a summary table. It checks the denylist once, before anything is sent. A machine whose output came back without an exit code shows as `unknown` and counts as not succeeded; look at its output (often a script error). Machines that can't reach a resource the script needs (an off-site laptop and a UNC share, say) fail on their own and are easy to miss in a long run, so grep each machine's output for the result line you expect rather than trusting the summary alone. Use it instead of a shell loop: a tight loop of lookups can make the instance return empty results, which looks like "no session found".
 
 ## Chat transcripts
 

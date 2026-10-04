@@ -265,6 +265,20 @@ class TestRunMany(Base):
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertEqual(len(self.stub.commands), 2)
 
+    def test_missing_exit_code_is_not_success(self):
+        # e.g. a PowerShell script that threw before the exit-code line could run
+        self.stub.add(make_session("PC-TWO", SID_B))
+        self.stub.responder = lambda sid, cmd: "boom" if sid == SID_B else echo_exit()(sid, cmd)
+        r = self.sc("run-many", "PC-ONE,PC-TWO", "hostname", "--pace", "0")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("1 succeeded, 1 did not (1 reported no exit code", r.stdout)
+        self.assertRegex(r.stdout, r"PC-TWO\s+unknown")
+
+    def test_no_exit_code_flag_still_counts_output_as_success(self):
+        self.stub.responder = lambda sid, cmd: "done"
+        r = self.sc("run-many", "PC-ONE", "hostname", "--pace", "0", "--no-exit-code")
+        self.assertEqual(r.returncode, 0, r.stdout)
+
     def test_denylist_checked_before_anything_is_sent(self):
         r = self.sc("run-many", "PC-ONE", "Restart-Computer", "--pace", "0")
         self.assertEqual(r.returncode, sc.EXIT_REFUSED)
