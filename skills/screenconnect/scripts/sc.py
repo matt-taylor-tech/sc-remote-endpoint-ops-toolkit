@@ -910,10 +910,16 @@ def cmd_run_many(client, args):
         explain(res, name, timeout, exit_code)
         rows.append((name, res["status"], res["exit"]))
 
+    # A missing exit code is not a success: a PowerShell `throw` (or any terminating error)
+    # stops the script before the exit-code line runs, and its output is just the error.
+    if exit_code:
+        rows = [(n, "unknown" if st == "ok" and ex is None else st, ex) for n, st, ex in rows]
     ok = sum(1 for _, st, ex in rows if st == "ok" and not ex)
+    unknown = sum(1 for _, st, _ in rows if st == "unknown")
     print("")
     print("SUMMARY: " + str(len(rows)) + " target(s), " + str(ok) + " succeeded, "
-          + str(len(rows) - ok) + " did not")
+          + str(len(rows) - ok) + " did not"
+          + (" (" + str(unknown) + " reported no exit code: check their output)" if unknown else ""))
     width = max(len(r[0]) for r in rows)
     for name, st, ex in rows:
         detail = ("exit " + str(ex)) if st == "ok" and ex is not None else ""
