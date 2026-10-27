@@ -115,7 +115,11 @@ DENY_RULES = [
      r"\bformat(\.com)?\s+[A-Za-z]:|\bFormat-Volume\b|\bClear-Disk\b|\bInitialize-Disk\b"
      r"|\b(diskpart|mkfs|fdisk)\b"),
     ("delete", "recursive or system-folder deletion",
-     r"\bdel\b[^\r\n]*[/\\]s\b|\b(rd|rmdir)\b[^\r\n]*/s\b|\brm\s+-[a-z]*r[a-z]*\s+[/~]"
+     # rm: any recursive flag, in any position or spelling, whatever the path (quoted,
+     # relative, a variable), like -Recurse and /s above. Matches to the end of that command
+     # so the refusal shows the whole path.
+     r"\bdel\b[^\r\n]*[/\\]s\b|\b(rd|rmdir)\b[^\r\n]*/s\b"
+     r"|\brm\b[^\r\n;|&]*?\s(-[a-z]*r[a-z]*|--recursive)(?=[\s;|&]|$)[^\r\n;|&]*"
      r"|\bRemove-Item\b[^\r\n]*-Recurse|\bRemove-Item\b[^\r\n]*\\Windows\b|\bcipher\b[^\r\n]*/w"),
     ("backups", "deleting shadow copies or backups",
      r"\bvssadmin(\.exe)?\s+delete|\bwbadmin(\.exe)?\s+delete|\bshadowcopy\s+delete"),

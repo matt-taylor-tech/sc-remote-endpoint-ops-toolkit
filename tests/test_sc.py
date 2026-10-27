@@ -221,8 +221,20 @@ class TestDenylist(unittest.TestCase):
                      "Set-MpPreference -DisableRealtimeMonitoring $false",
                      "Set-ItemProperty 'HKLM:\\x' -Name fDenyTSConnections -Value 1",
                      "del C:\\stuff\\file.txt", "Get-NetFirewallRule -Enabled True",
-                     "Set-NetFirewallProfile -All -Enabled True", "net user bob"]:
+                     "Set-NetFirewallProfile -All -Enabled True", "net user bob",
+                     "rm /tmp/file.txt", "rm -f /tmp/x.log", "rm -v r.txt",
+                     "grep -r foo /etc", "ls -lr /var; rm /tmp/a", "docker rm -f web"]:
             self.assertEqual(self.cats(text), set(), text)
+
+    def test_recursive_rm_any_spelling(self):
+        for text in ['rm -rf "/etc"', "rm -r -f /etc", "rm --recursive /etc", "rm -rf $DIR",
+                     "rm -fr ~/x", "rm -rf *", "sudo rm -R /srv/data", "cd /x && rm -rf ./build",
+                     "find /x -name y -exec rm -rf {} +", "rm -rf '/tmp/it''s'", "rm -r /tmp/a"]:
+            self.assertIn("delete", self.cats(text), text)
+
+    def test_refusal_snippet_shows_whole_rm_command(self):
+        hit = [s for c, _, s in sc.denied("cd /; rm -rf /tmp/sc-push-live; echo done") if c == "delete"]
+        self.assertEqual(hit, ["rm -rf /tmp/sc-push-live"])
 
     def test_allow_skips_only_named_category(self):
         text = "Restart-Computer; wevtutil cl System"
