@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -352,6 +353,45 @@ class TestPush(Base):
         local = os.path.join(self.tmp, "a.txt")
         open(local, "w").close()
         self.assertEqual(self.sc("push", "PC-ONE", local, "a.txt").returncode, sc.EXIT_USAGE)
+
+    @unittest.skipUnless(shutil.which("sh"), "needs a POSIX sh with base64 and sha256sum/shasum")
+    def test_push_posix_runs_in_real_sh(self):
+        """Linux/macOS endpoint: the scripts are run by a real sh, not parsed."""
+        self.stub.add(make_session("LNX-ONE", SID_B, os_name="Debian GNU/Linux 13 (trixie)"))
+        sh = shutil.which("sh")
+
+        def run_sh(sid, cmd):  # stdin, not -c: Windows mangles a 20 KB argument
+            return subprocess.run([sh], input=cmd, capture_output=True, text=True).stdout
+        self.stub.responder = run_sh
+        root = "/tmp/sc-push-test-" + os.urandom(4).hex()
+        self.addCleanup(subprocess.run, [sh, "-c", 'rm -rf "$1"', "sh", root])
+        data = os.urandom(40000)
+        local = os.path.join(self.tmp, "payload.bin")
+        with open(local, "wb") as f:
+            f.write(data)
+        remote = root + "/it's a dir/payload.bin"
+        r = self.sc("push", "LNX-ONE", local, remote, "--chunk-kb", "16")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotIn("#!ps", self.sent())
+        got = subprocess.run([sh, "-c", 'cat "$1"', "sh", remote], capture_output=True).stdout
+        self.assertEqual(got, data)
+        r = self.sc("push", "LNX-ONE", local, remote)
+        self.assertEqual(r.returncode, sc.EXIT_USAGE)
+        self.assertIn("already exists", r.stderr)
+        r = self.sc("push", "LNX-ONE", local, remote, "--overwrite")
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_path_must_match_endpoint_os(self):
+        self.stub.add(make_session("LNX-ONE", SID_B, os_name="Ubuntu 24.04"))
+        local = os.path.join(self.tmp, "a.txt")
+        open(local, "w").close()
+        r = self.sc("push", "LNX-ONE", local, "C:\\a.txt")
+        self.assertEqual(r.returncode, sc.EXIT_USAGE)
+        self.assertIn("POSIX path", r.stderr)
+        r = self.sc("push", "PC-ONE", local, "/tmp/a.txt")
+        self.assertEqual(r.returncode, sc.EXIT_USAGE)
+        self.assertIn("Windows path", r.stderr)
+        self.assertEqual(self.stub.commands, [])
 
     def test_size_cap(self):
         local = os.path.join(self.tmp, "big.bin")

@@ -979,6 +979,7 @@ def cmd_online(client, args):
 PUSH_USAGE = ("usage: sc.py push <sessionID|serial|machineName> <localfile> <remotepath> "
               "[--overwrite] [--chunk-kb 16] [--max-mb 5] [--timeout 60]")
 REMOTE_PATH_RE = re.compile(r"^([A-Za-z]:[\\/]|\\\\[^\\/]+[\\/])")
+POSIX_PATH_RE = re.compile(r"^/.*[^/]$")
 
 
 def ps_str(text):
@@ -1010,15 +1011,36 @@ def push_scripts(remote, data, chunk, overwrite):
     return pre, chunks, fin, sha
 
 
+# The same three steps in POSIX sh, for Linux and macOS agents. The path travels as
+# base64 for the same reason as above; `base64 -D` is macOS before 13.
+SH_DECODE = 'd() { printf %s "$1" | base64 -d 2>/dev/null || printf %s "$1" | base64 -D; }\n'
+
+
+def push_scripts_sh(remote, data, chunk, overwrite):
+    p = (SH_DECODE + "p=$(d '" + base64.b64encode(remote.encode("utf-8")).decode() + "')\n"
+         'part="$p.sc-part"\n')
+    pre = (p + 'if [ -e "$p" ] && [ ' + ("1" if overwrite else "0") + ' = 0 ]; then echo SC_PUSH_EXISTS; exit 0; fi\n'
+           'mkdir -p "$(dirname "$p")" && rm -f "$part" && : > "$part" && echo SC_PUSH_READY\n')
+    chunks = []
+    for i in range(0, len(data), chunk):
+        b64 = base64.b64encode(data[i:i + chunk]).decode()
+        chunks.append(p + "d '" + b64 + "' >> \"$part\" && echo \"SC_PUSH_OK $(wc -c < \"$part\" | tr -d ' ')\"\n")
+    sha = hashlib.sha256(data).hexdigest().upper()
+    fin = (p + "h=$( (sha256sum \"$part\" 2>/dev/null || shasum -a 256 \"$part\") | cut -d' ' -f1 | tr a-f A-F)\n"
+           'if [ "$h" != "' + sha + '" ]; then rm -f "$part"; echo "SC_PUSH_BADHASH $h"; exit 0; fi\n'
+           'mv -f "$part" "$p" && echo "SC_PUSH_DONE $h"\n')
+    return pre, chunks, fin, sha
+
+
 def cmd_push(client, args):
     opts, pos = parse_flags(args, {"--overwrite": "bool", "--chunk-kb": "int", "--max-mb": "float",
                                    "--timeout": "int"}, PUSH_USAGE)
     if len(pos) != 3:
         die(PUSH_USAGE, EXIT_USAGE)
     target, local, remote = pos
-    if not REMOTE_PATH_RE.match(remote):
-        die("ERROR: the remote path must be absolute (C:\\... or \\\\server\\share\\...): " + remote,
-            EXIT_USAGE)
+    if not (REMOTE_PATH_RE.match(remote) or POSIX_PATH_RE.match(remote)):
+        die("ERROR: the remote path must be an absolute file path (C:\\..., \\\\server\\share\\... "
+            "or /...): " + remote, EXIT_USAGE)
     chunk_kb = opts["chunk_kb"] or 16
     if not 1 <= chunk_kb <= 64:
         die("ERROR: --chunk-kb must be between 1 and 64", EXIT_USAGE)
@@ -1036,14 +1058,18 @@ def cmd_push(client, args):
 
     s = resolve(client, target, for_command=True)
     sid, name = s["SessionID"], s.get("Name", target)
-    if not is_windows(s):
-        die("ERROR: push needs a Windows endpoint (it uses PowerShell); " + name + " reports "
-            + str((s.get("GuestInfo") or {}).get("OperatingSystemName")), EXIT_USAGE)
-    pre, chunks, fin, sha = push_scripts(remote, data, chunk_kb * 1024, opts["overwrite"])
+    windows = is_windows(s)
+    if windows != bool(REMOTE_PATH_RE.match(remote)):
+        die("ERROR: " + name + " reports " + str((s.get("GuestInfo") or {}).get("OperatingSystemName"))
+            + ", so the remote path must be " + ("a Windows path (C:\\...)" if windows else "a POSIX path (/...)")
+            + ": " + remote, EXIT_USAGE)
+    shell = "powershell" if windows else "sh"
+    make = push_scripts if windows else push_scripts_sh
+    pre, chunks, fin, sha = make(remote, data, chunk_kb * 1024, opts["overwrite"])
     fields = dict(target=target, session=sid, name=name, sha256=sha.lower(), bytes=len(data))
 
     def step(script, expect):
-        res = execute(client, sid, wrap_command(script, "powershell", timeout, exit_code=False), timeout)
+        res = execute(client, sid, wrap_command(script, shell, timeout, exit_code=False), timeout)
         if res["status"] != "ok":
             explain(res, name, timeout, False)
             audit("push", status=res["status"], **fields)
