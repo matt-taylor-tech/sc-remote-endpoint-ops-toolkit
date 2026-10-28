@@ -130,6 +130,27 @@ class TestRun(Base):
         self.assertEqual(r.returncode, sc.EXIT_TIMEOUT)
         self.assertIn("KILLED", r.stderr)
 
+    def test_ignores_another_runs_output(self):
+        # Another caller's command finishes on the same session before ours does.
+        def responder(sid, cmd):
+            self.stub.post_event(sid, 70, sc.RUN_MARK + "0123456789abcdef\nnot mine\n" + sc.EXIT_MARK + "0")
+            nonce = sc.RUN_RE.search(cmd).group(0)
+            return nonce + "\nmine\n" + sc.EXIT_MARK + "0"
+        self.stub.responder = responder
+        r = self.sc("run", "PC-ONE", "Get-Date", "--shell", "powershell")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("mine", r.stdout)
+        self.assertNotIn("not mine", r.stdout)
+        self.assertNotIn(sc.RUN_MARK, r.stdout)
+
+    def test_each_run_prints_its_own_nonce_first(self):
+        for shell, line in (("powershell", '"' + sc.RUN_MARK), ("cmd", "@echo " + sc.RUN_MARK)):
+            self.sc("run", "PC-ONE", "x", "--shell", shell)
+            body = self.sent().split("#maxlength=100000", 1)[1]
+            self.assertTrue(body.lstrip("\r\n").startswith(line), body[:60])
+        first = sc.RUN_RE.search(sc.wrap_command("x", "sh", 5)).group(1)
+        self.assertNotEqual(first, sc.RUN_RE.search(sc.wrap_command("x", "sh", 5)).group(1))
+
     def test_timeout_while_online(self):
         self.stub.responder = lambda sid, cmd: None
         r = self.sc("run", "PC-ONE", "x", "--timeout", "1")

@@ -700,6 +700,11 @@ EXIT_MARK = "__SC_EXIT__="
 EXIT_RE = re.compile(r"^\s*__SC_EXIT__=(-?\d+)\s*$", re.M)
 KILLED_RE = re.compile(r"Killed after (\d+) milliseconds")
 TRUNC_RE = re.compile(r"Truncated output at (\d+) characters")
+# Every command prints a per-run nonce first, so a caller only takes its own output
+# when another caller (another sc.py, another tech) runs commands on the same session.
+RUN_MARK = "__SC_RUN__="
+RUN_RE = re.compile(r"__SC_RUN__=(\w+)")
+RUN_LINE_RE = re.compile(r"^[ \t]*__SC_RUN__=\w+[ \t]*\r?\n?", re.M)
 
 
 def default_shell(session, requested):
@@ -711,6 +716,9 @@ def default_shell(session, requested):
 def wrap_command(command, shell, timeout, max_output=MAX_OUTPUT_CHARS, exit_code=True):
     head = "#!ps\n" if shell == "powershell" else ""  # cmd/sh: the agent's default interpreter
     head += "#timeout=" + str(int(timeout) * 1000) + "\n#maxlength=" + str(int(max_output)) + "\n"
+    nonce = RUN_MARK + secrets.token_hex(8)
+    head += ('"' + nonce + '"\n' if shell == "powershell" else
+             "@echo " + nonce + "\r\n" if shell == "cmd" else 'echo "' + nonce + '"\n')
     if not exit_code:
         return head + command
     body = command.rstrip("\r\n")
@@ -741,6 +749,8 @@ def _events(client, sid):
 def execute(client, sid, wrapped, timeout):
     """Send an already-wrapped command and wait for its output event.
     Returns a dict: status ok|killed|timeout|offline, output, exit, killed_ms, truncated."""
+    m = RUN_RE.search(wrapped)
+    nonce = m.group(1) if m else None
     before = {e.get("EventID") for e in _events(client, sid)}
     client.call("SendCommandToSession", [sid, wrapped])
     # The agent's own timer equals `timeout`; allow a little longer for its
@@ -752,8 +762,11 @@ def execute(client, sid, wrapped, timeout):
         interval = min(interval * 1.5, 5.0)
         outs = [e for e in _events(client, sid)
                 if e.get("EventID") not in before and str(e.get("EventType")) == EVT_COMMAND_OUTPUT]
+        # Skip output that carries another run's nonce; output with no nonce at all
+        # (the agent's own "Killed after" notice, or an older sc.py) is still taken.
+        outs = [e for e in outs if all(n == nonce for n in RUN_RE.findall(e.get("Data") or ""))]
         if outs:
-            raw = "\n".join(e.get("Data") or "" for e in outs)
+            raw = RUN_LINE_RE.sub("", "\n".join(e.get("Data") or "" for e in outs))
             out, code = split_exit(raw)
             km, tm = KILLED_RE.search(out), TRUNC_RE.search(out)
             return {"status": "killed" if km else "ok", "output": out, "exit": code,
