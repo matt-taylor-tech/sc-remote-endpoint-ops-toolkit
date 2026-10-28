@@ -1064,9 +1064,14 @@ def cmd_push(client, args):
     sid, name = s["SessionID"], s.get("Name", target)
     windows = is_windows(s)
     if windows != bool(REMOTE_PATH_RE.match(remote)):
+        hint = ""
+        if not windows and os.environ.get("MSYSTEM") and re.match(r"^[A-Za-z]:/", remote):
+            # Git Bash rewrites /tmp/x to C:/Users/.../Temp/x before Python ever sees it.
+            hint = ("\nGit Bash turned your /... path into a Windows one. Re-run with MSYS_NO_PATHCONV=1 "
+                    "in front, or from PowerShell.")
         die("ERROR: " + name + " reports " + str((s.get("GuestInfo") or {}).get("OperatingSystemName"))
             + ", so the remote path must be " + ("a Windows path (C:\\...)" if windows else "a POSIX path (/...)")
-            + ": " + remote, EXIT_USAGE)
+            + ": " + remote + hint, EXIT_USAGE)
     shell = "powershell" if windows else "sh"
     make = push_scripts if windows else push_scripts_sh
     pre, chunks, fin, sha = make(remote, data, chunk_kb * 1024, opts["overwrite"])

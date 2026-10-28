@@ -405,6 +405,17 @@ class TestPush(Base):
         self.assertIn("Windows path", r.stderr)
         self.assertEqual(self.stub.commands, [])
 
+    def test_git_bash_path_conversion_hint(self):
+        self.stub.add(make_session("LNX-ONE", SID_B, os_name="Debian GNU/Linux 13"))
+        local = os.path.join(self.tmp, "a.txt")
+        open(local, "w").close()
+        mangled = "C:/Users/me/AppData/Local/Temp/a.txt"  # what Git Bash makes of /tmp/a.txt
+        r = self.sc("push", "LNX-ONE", local, mangled, env={"MSYSTEM": "MINGW64"})
+        self.assertEqual(r.returncode, sc.EXIT_USAGE)
+        self.assertIn("MSYS_NO_PATHCONV=1", r.stderr)
+        r = self.sc("push", "LNX-ONE", local, mangled, env={"MSYSTEM": ""})
+        self.assertNotIn("MSYS_NO_PATHCONV", r.stderr)
+
     def test_size_cap(self):
         local = os.path.join(self.tmp, "big.bin")
         with open(local, "wb") as f:
