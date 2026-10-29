@@ -74,6 +74,14 @@ To inspect first:
 
 Filter fields: Name, SessionType ('Support'/'Meeting'/'Access'), GuestConnectedCount, GuestMachineName, GuestMachineSerialNumber, GuestLoggedOnUserName, GuestOperatingSystemName, CustomProperty1..8.
 
+To set a session's custom properties (company, site, group and so on), pass all eight values in order; the call replaces the whole list, so read the current `CustomPropertyValues` first and change only the slot you mean:
+
+```bash
+sc.py UpdateSessionCustomProperties "<sessionID>" '["Contoso","Main St","","Servers","","","",""]'
+```
+
+It returns `{}` on success. Read the session back to confirm.
+
 ## Response shape
 
 Top level: `Name, SessionID, SessionType (int 2=Access), GuestNetworkAddress (public IP), CustomProperties (CustomProperty1 = company), ActiveConnections`. Machine facts nest in `GuestInfo`: `MachineName, MachineSerialNumber, MachineManufacturerName, MachineModel, LoggedOnUserName, LoggedOnUserDomain, OperatingSystemName/Version, ProcessorName, SystemMemoryTotalMegabytes, PrivateNetworkAddress, HardwareNetworkAddress (MAC), LastBootTime, LastActivityTime, TimeZoneName, IsLocalAdminPresent`.
