@@ -18,7 +18,9 @@ Commands:
       [--allow <category,...>] [--force] [--no-exit-code] [--detach [--job-hours 4]]
   run-many <t1,t2,...|@listfile> "<command>" | --file <path> | -
       [same flags as run, except --detach] [--pace 2]
-  online [<target> ...] [--json]                  who is connected (all, or a list)
+  online [<target> ...] [--wide] [--json]         who is connected (all, or a list);
+                                                  --wide adds OS build and IP addresses
+  --version                                       this copy's version and path
   push <target> <localfile> <remotepath> [--overwrite] [--chunk-kb 16] [--max-mb 5]
   job <target> <jobID> [--tail 40] [--wait <seconds>] [--cleanup [--force]]
   job <target> --list
@@ -123,7 +125,10 @@ DENY_RULES = [
      r"|\bRemove-Item\b[^\r\n]*-Recurse|\bRemove-Item\b[^\r\n]*\\Windows\b|\bcipher\b[^\r\n]*/w"),
     ("backups", "deleting shadow copies or backups",
      r"\bvssadmin(\.exe)?\s+delete|\bwbadmin(\.exe)?\s+delete|\bshadowcopy\s+delete"),
-    ("boot", "boot configuration changes", r"\bbcdedit\b"),
+    # bcdedit on its own, or with /enum [all|{id}] [/v] and nothing else, only reads.
+    ("boot", "boot configuration changes",
+     r"\bbcdedit(\.exe)?(?![\w.])(?![ \t]*(/enum\b[^\r\n/;|&]*(/v\b[^\r\n/;|&]*)?)?(?:$|[\r\n;|&]))"
+     r"[^\r\n]*"),
     ("registry", "registry key deletion", r"\breg(\.exe)?\s+delete\b"),
     ("power", "shutdown or restart",
      r"\bshutdown(\.exe)?\b|\bRestart-Computer\b|\bStop-Computer\b"),
@@ -827,8 +832,24 @@ def run_opts(opts, usage):
     return shell, timeout, max_output
 
 
+def plugin_version():
+    """The version in this copy's plugin.json, so a stale second install is visible."""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..",
+                        ".claude-plugin", "plugin.json")
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f).get("version") or "unknown"
+    except (OSError, ValueError):
+        return "unknown"
+
+
+def version_line():
+    return "sc.py " + plugin_version() + " (" + os.path.abspath(__file__) + ")"
+
+
 def run_command(client, ident, command, shell=None, timeout=60, force=False, allow=(),
                 max_output=MAX_OUTPUT_CHARS, exit_code=True):
+    print(version_line(), file=sys.stderr)
     refuse_if_denied(command, allow, force)
     s = resolve(client, ident, for_command=True)
     sid, name = s["SessionID"], s.get("Name", ident)
@@ -900,6 +921,7 @@ def cmd_run_many(client, args):
     allow = parse_allow(opts["allow"])
     pace = opts["pace"] if opts["pace"] is not None else 2.0
     exit_code = not opts["no_exit_code"]
+    print(version_line(), file=sys.stderr)
     refuse_if_denied(command, allow, opts["force"])  # once, before anything is sent
 
     rows = []
@@ -947,8 +969,8 @@ def cmd_run_many(client, args):
 # --------------------------------------------------------------------- online
 
 def cmd_online(client, args):
-    usage = "usage: sc.py online [<sessionID|serial|machineName> ...] [--json]"
-    opts, pos = parse_flags(args, {"--json": "bool"}, usage)
+    usage = "usage: sc.py online [<sessionID|serial|machineName> ...] [--wide] [--json]"
+    opts, pos = parse_flags(args, {"--json": "bool", "--wide": "bool"}, usage)
 
     def row(target, s, status):
         gi = (s or {}).get("GuestInfo") or {}
@@ -956,6 +978,9 @@ def cmd_online(client, args):
                 "name": (s or {}).get("Name"), "session": (s or {}).get("SessionID"),
                 "machine": gi.get("MachineName"), "user": gi.get("LoggedOnUserName"),
                 "os": (gi.get("OperatingSystemName") or "").replace("Microsoft ", ""),
+                "build": gi.get("OperatingSystemVersion"),
+                "public_ip": (s or {}).get("GuestNetworkAddress"),
+                "private_ip": gi.get("PrivateNetworkAddress"),
                 "boot": (_when(gi.get("LastBootTime")) or "")[:16].replace("T", " "),
                 "last_active": (last_active(s or {}) or "")[:16].replace("T", " ")}
 
@@ -980,6 +1005,8 @@ def cmd_online(client, args):
     else:
         cols = [("target", "Target"), ("status", "Status"), ("user", "User"), ("os", "OS"),
                 ("boot", "Last boot"), ("last_active", "Last active"), ("session", "SessionID")]
+        if opts["wide"]:
+            cols[4:4] = [("build", "Build"), ("public_ip", "Public IP"), ("private_ip", "Private IP")]
         if not pos:
             cols = [c for c in cols if c[0] not in ("status", "last_active")]
         table = [[h for _, h in cols]] + [[str(r[k] or "") for k, _ in cols] for r in rows]
@@ -1406,6 +1433,9 @@ def main():
     if len(sys.argv) < 2 or sys.argv[1] in ("-h", "--help", "help"):
         print(__doc__)
         return 0 if len(sys.argv) >= 2 else EXIT_USAGE
+    if sys.argv[1] in ("--version", "version"):
+        print(version_line())
+        return 0
     if sys.argv[1] == "setup":
         do_setup(sys.argv[2:])
         return 0

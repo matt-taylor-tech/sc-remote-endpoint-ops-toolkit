@@ -247,6 +247,18 @@ class TestDenylist(unittest.TestCase):
                      "grep -r foo /etc", "ls -lr /var; rm /tmp/a", "docker rm -f web"]:
             self.assertEqual(self.cats(text), set(), text)
 
+    def test_bcdedit_read_only_allowed(self):
+        for text in ["bcdedit", "bcdedit /enum", "bcdedit.exe /enum all", "bcdedit /enum {current}",
+                     "bcdedit /enum all /v", "bcdedit /enum | findstr /i setup",
+                     "$b = bcdedit /enum; $b"]:
+            self.assertNotIn("boot", self.cats(text), text)
+
+    def test_bcdedit_changes_refused(self):
+        for text in ["bcdedit /set safeboot minimal", "bcdedit /delete {abc}", "bcdedit /enum; bcdedit /set x y",
+                     "bcdedit /default {current}", "bcdedit /enum /set x", "bcdedit /import C:\\b.bak",
+                     "bcdedit /bootsequence {abc}", "bcdedit /store C:\\x /enum"]:
+            self.assertIn("boot", self.cats(text), text)
+
     def test_recursive_rm_any_spelling(self):
         for text in ['rm -rf "/etc"', "rm -r -f /etc", "rm --recursive /etc", "rm -rf $DIR",
                      "rm -fr ~/x", "rm -rf *", "sudo rm -R /srv/data", "cd /x && rm -rf ./build",
@@ -333,6 +345,28 @@ class TestOnline(Base):
         rows = {x["target"]: x["status"] for x in json.loads(r.stdout)}
         self.assertEqual(rows, {"PC-ONE": "online", "PC-OFF": "offline", "PC-GONE": "not found"})
         self.assertEqual(r.returncode, 1)
+
+    def test_wide_adds_build_and_addresses(self):
+        s = self.stub.sessions[0]
+        s["GuestNetworkAddress"] = "203.0.113.7"
+        s["GuestInfo"].update({"OperatingSystemVersion": "10.0.26100", "PrivateNetworkAddress": "192.168.1.20"})
+        r = self.sc("online", "--wide")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        for v in ("Build", "10.0.26100", "203.0.113.7", "192.168.1.20"):
+            self.assertIn(v, r.stdout)
+        self.assertNotIn("Public IP", self.sc("online").stdout)
+
+
+class TestVersion(Base):
+    def test_version_flag_and_run_banner(self):
+        with open(os.path.join(HERE, "..", ".claude-plugin", "plugin.json"), encoding="utf-8") as f:
+            ver = json.load(f)["version"]
+        r = self.sc("--version")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("sc.py " + ver, r.stdout)
+        r = self.sc("run", "PC-ONE", "hostname")
+        self.assertIn("sc.py " + ver, r.stderr)
+        self.assertNotIn("sc.py " + ver, r.stdout)
 
 
 class PushEndpoint:
