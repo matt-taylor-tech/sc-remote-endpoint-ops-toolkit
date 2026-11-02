@@ -123,6 +123,7 @@ The agent on its own kills a command after 10 s ("Killed after 10000 millisecond
 - **`whoami /groups` doesn't show the computer's domain groups.** SYSTEM's token is local, so "is this PC in AD group X" comes back False on every machine. Use `gpresult /scope computer /r` (the groups Group Policy saw at the last refresh) or `klist -li 0x3e7`.
 - **`gpupdate /force` can stop and ask "OK to restart? (Y/N)"** and wait until the timeout. Send `cmd /c "echo N| gpupdate /target:computer /force"`.
 - **`powershell.exe -File script.ps1 -Name 'a','b'` doesn't make an array**: with `-File`, arguments arrive as plain strings (`a,` and `b`). When a parameter takes a list, use `powershell.exe -Command "& 'script.ps1' -Name 'a','b'"`, or call the script from a `--file` wrapper.
+- **A user's shortcut resolves into SYSTEM's profile.** `WScript.Shell`'s `CreateShortcut(...).TargetPath` expands `%LOCALAPPDATA%` and similar variables for the caller, so a per-user app's `.lnk` comes back as `C:\Windows\system32\config\systemprofile\AppData\Local\...`. Swap that prefix for `C:\Users\<user>\AppData\Local\` (or look in the user's profile directly) before you act on the path.
 - **Nested arrays flatten in PowerShell:** `@( @('a','b') <newline> @('c','d') )` is four strings, not two pairs. Write each inner array with a leading comma: `,@('a','b')`.
 
 ### Long jobs
