@@ -7,7 +7,7 @@ Query and lightly manage ScreenConnect (ConnectWise Control) sessions from Claud
 ## Scope
 
 - Reads: session lookup by name, serial, or ID; full session details with event history; uptime from LastBootTime; `online` to see which machines (all, or a list you give it) are connected
-- Commands: `run <id> "<command>"` sends a command and waits for its output. The remote exit code becomes the script's exit code. cmd by default on Windows, `sh` on Mac/Linux, `--shell powershell` supported. `--file <path>` (or `-` for stdin) sends a script file as written, with no shell quoting in the way.
+- Commands: `run <id> "<command>"` sends a command and waits for its output. The remote exit code becomes the script's exit code. cmd by default on Windows, `sh` on Mac/Linux, `--shell powershell` supported. `--file <path>` (or `-` for stdin) sends a script file as written, with no shell quoting in the way; PowerShell scripts can declare `param()` and take arguments after `--`.
 - `run-many` runs one command across a list of machines, paced, with a per-machine summary
 - `push` copies a file (up to a few MB) to a Windows, Linux or Mac endpoint in chunks and verifies its SHA-256 there
 - `run --detach` starts a long job as a one-off SYSTEM scheduled task on a Windows endpoint; `job` reads its log and exit code, waits for it, or cleans it up
