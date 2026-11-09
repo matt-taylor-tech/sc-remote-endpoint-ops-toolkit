@@ -99,6 +99,41 @@ class TestRun(Base):
         self.assertTrue(cmd.startswith("#!ps\n"))
         self.assertNotIn("\ufeff", cmd)
 
+    def test_powershell_body_is_a_dot_sourced_block(self):
+        # issue #21: param() must be the block's first statement, and the $? capture sits
+        # inside the block so a top-level `return` still reaches the exit-code line.
+        path = os.path.join(self.tmp, "p.ps1")
+        with open(path, "w", encoding="utf-8", newline="") as f:
+            f.write("param([switch]$Final)\nif ($Final) { return }\n'x'\n")
+        r = self.sc("run", "PC-ONE", "--file", path)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        cmd = self.sent()
+        self.assertIn(". {\nparam([switch]$Final)\n", cmd)
+        self.assertIn("'x'\n$__sc_ok = $?\n}\n", cmd)
+        self.assertLess(cmd.index("$__sc_ok = $true"), cmd.index(". {"))
+        self.assertGreater(cmd.index(sc.EXIT_MARK), cmd.index("}\n"))
+
+    def test_script_args_after_double_dash(self):
+        path = os.path.join(self.tmp, "p.ps1")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("param([switch]$Final, $Name)\n$Name\n")
+        r = self.sc("run", "PC-ONE", "--file", path, "--timeout", "30",
+                    "--", "-Final", "-Name", "it's $(x)", "--timeout")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("} -Final -Name 'it''s $(x)' '--timeout'\n", self.sent())
+        self.assertIn("#timeout=30000", self.sent())
+
+    def test_script_args_need_powershell(self):
+        r = self.sc("run", "PC-ONE", "dir", "--", "-Final")
+        self.assertEqual(r.returncode, sc.EXIT_USAGE)
+        self.assertIn("only for PowerShell", r.stderr)
+        self.assertEqual(self.stub.commands, [])
+
+    def test_script_args_are_denylist_checked(self):
+        r = self.sc("run", "PC-ONE", "--shell", "powershell", "& $args[0]", "--", "Restart-Computer")
+        self.assertEqual(r.returncode, sc.EXIT_REFUSED)
+        self.assertEqual(self.stub.commands, [])
+
     def test_stdin(self):
         r = self.sc("run", "PC-ONE", "-", stdin="echo from-stdin\n")
         self.assertEqual(r.returncode, 0, r.stderr)
@@ -325,6 +360,22 @@ class TestRunMany(Base):
         r = self.sc("run-many", "PC-ONE", "hostname", "--pace", "0", "--no-exit-code")
         self.assertEqual(r.returncode, 0, r.stdout)
 
+    def test_script_args(self):
+        self.stub.add(make_session("PC-TWO", SID_B))
+        r = self.sc("run-many", "PC-ONE,PC-TWO", "--shell", "powershell",
+                    "param($N) $N", "--pace", "0", "--", "-N", "5")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(len(self.stub.commands), 2)
+        self.assertTrue(all("} -N '5'\n" in c for _, c in self.stub.commands))
+
+    def test_script_args_skip_non_powershell_targets(self):
+        self.stub.add(make_session("MAC-ONE", SID_B, os_name="macOS 15.1"))
+        r = self.sc("run-many", "PC-ONE,MAC-ONE", "echo hi", "--pace", "0", "--", "-N")
+        self.assertEqual(r.returncode, 1)
+        self.assertRegex(r.stdout, r"PC-ONE\s+not run")
+        self.assertRegex(r.stdout, r"MAC-ONE\s+not run")
+        self.assertEqual(self.stub.commands, [])
+
     def test_denylist_checked_before_anything_is_sent(self):
         r = self.sc("run-many", "PC-ONE", "Restart-Computer", "--pace", "0")
         self.assertEqual(r.returncode, sc.EXIT_REFUSED)
@@ -492,6 +543,16 @@ class TestDetachAndJob(Base):
         payload = re.search(r"'" + job + r"\.ps1'\), \[Convert\]::FromBase64String\('([^']*)'", cmd).group(1)
         self.assertEqual(base64.b64decode(payload), b"\xef\xbb\xbfGet-Date")
 
+    def test_detach_passes_script_args_to_the_file(self):
+        self.stub.responder = lambda sid, cmd: "SC_JOB_STARTED Running"
+        r = self.sc("run", "PC-ONE", "param([switch]$Final) $Final", "--shell", "powershell",
+                    "--detach", "--", "-Final")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        job = re.search(r"Started job (sc-\d{8}-\d{6}-[0-9a-f]{4})", r.stdout).group(1)
+        runner = re.search(r"'" + job + r"\.run\.ps1'\), \[Convert\]::FromBase64String\('([^']*)'",
+                           self.sent()).group(1)
+        self.assertIn(".ps1') -Final *>&1", base64.b64decode(runner).decode("utf-8-sig"))
+
     def test_detach_is_denylist_checked(self):
         r = self.sc("run", "PC-ONE", "Restart-Computer", "--detach")
         self.assertEqual(r.returncode, sc.EXIT_REFUSED)
@@ -543,6 +604,14 @@ class TestUnits(unittest.TestCase):
     def test_split_exit(self):
         self.assertEqual(sc.split_exit("a\nb\n__SC_EXIT__=7\n"), ("a\nb", 7))
         self.assertEqual(sc.split_exit("no marker"), ("no marker", None))
+
+    def test_ps_args(self):
+        self.assertEqual(sc.ps_args(["-Final", "-Name", "a b", "-1", "x’y", "$env:X"]),
+                         "-Final -Name 'a b' '-1' 'x’’y' '$env:X'")
+
+    def test_split_script_args(self):
+        self.assertEqual(sc.split_script_args(["a", "--", "-x", "--"]), (["a"], ["-x", "--"]))
+        self.assertEqual(sc.split_script_args(["a"]), (["a"], []))
 
     def test_quote(self):
         self.assertEqual(sc.q("O'BRIEN"), "'O''BRIEN'")

@@ -16,8 +16,9 @@ Commands:
   run <target> "<command>" | --file <path> | -     send a command, wait for output
       [--shell cmd|powershell|sh] [--timeout 60] [--max-output 100000]
       [--allow <category,...>] [--force] [--no-exit-code] [--detach [--job-hours 4]]
+      [-- <script args>]
   run-many <t1,t2,...|@listfile> "<command>" | --file <path> | -
-      [same flags as run, except --detach] [--pace 2]
+      [same flags as run, except --detach] [--pace 2] [-- <script args>]
   online [<target> ...] [--wide] [--json]         who is connected (all, or a list);
                                                   --wide adds OS build and IP addresses
   --version                                       this copy's version and path
@@ -38,6 +39,11 @@ run details:
   command at 10 s and truncates output at 5000 characters.
   The remote exit code becomes sc.py's exit code (see Exit codes). --no-exit-code
   sends the command without the extra exit-code line.
+  PowerShell commands run as a dot-sourced script block, so a script's param()
+  block works and a top-level `return` still reports an exit code (0). Everything
+  after `--` is passed to it as arguments (PowerShell only): `-Name` stays a
+  parameter name, anything else is sent as a single-quoted literal.
+    sc.py run PC-01 --file check.ps1 -- -Final -Since 2026-01-01
   --detach runs the command as a one-off SYSTEM scheduled task on a Windows
   endpoint, logging to a file there; read it with `job`.
   The shell defaults to cmd on Windows endpoints and sh elsewhere (from the
@@ -259,6 +265,20 @@ def parse_flags(args, spec, usage):
             pos.append(a)
             i += 1
     return opts, pos
+
+
+def split_script_args(args):
+    """Split a command line at the first lone `--`: (sc.py's own args, script args)."""
+    if "--" in args:
+        i = args.index("--")
+        return args[:i], args[i + 1:]
+    return args, []
+
+
+def need_powershell(script_args, shell, name=None):
+    if script_args and shell != "powershell":
+        die("ERROR: arguments after -- are only for PowerShell (a .ps1 file or --shell powershell)"
+            + ("; " + name + " would use " + shell if name else ""), EXIT_USAGE)
 
 
 def parse_allow(value):
@@ -718,20 +738,46 @@ def default_shell(session, requested):
     return "cmd" if is_windows(session) else "sh"
 
 
-def wrap_command(command, shell, timeout, max_output=MAX_OUTPUT_CHARS, exit_code=True):
+PS_PARAM_NAME_RE = re.compile(r"^-[A-Za-z_]\w*$")
+PS_QUOTES = "'‘’‚‛"  # PowerShell treats all of these as single quotes
+
+
+def ps_args(args):
+    """Script arguments as PowerShell source: `-Name` stays a parameter name, anything
+    else becomes a single-quoted literal, so nothing in it is expanded or run."""
+    out = []
+    for a in args:
+        if PS_PARAM_NAME_RE.match(a):
+            out.append(a)
+        else:
+            out.append("'" + "".join(c * 2 if c in PS_QUOTES else c for c in a) + "'")
+    return " ".join(out)
+
+
+def wrap_command(command, shell, timeout, max_output=MAX_OUTPUT_CHARS, exit_code=True,
+                 script_args=()):
     head = "#!ps\n" if shell == "powershell" else ""  # cmd/sh: the agent's default interpreter
     head += "#timeout=" + str(int(timeout) * 1000) + "\n#maxlength=" + str(int(max_output)) + "\n"
     nonce = RUN_MARK + secrets.token_hex(8)
     head += ('"' + nonce + '"\n' if shell == "powershell" else
              "@echo " + nonce + "\r\n" if shell == "cmd" else 'echo "' + nonce + '"\n')
-    if not exit_code:
-        return head + command
     body = command.rstrip("\r\n")
     if shell == "powershell":
-        # $? must be read by the very next statement after the operator's last line.
-        return (head + body + "\n$__sc_ok = $?\n"
+        # The body runs as a dot-sourced script block, so a param() block is its first
+        # statement (and takes script_args), a top-level `return` leaves only the block,
+        # and variables and functions it defines still land in the script's scope.
+        # $? after the block is always True, so it is read inside, by the very next
+        # statement after the body's last line; a `return` skips that and counts as success.
+        call = ". {\n" + body + "\n$__sc_ok = $?\n}"
+        if script_args:
+            call += " " + ps_args(script_args)
+        if not exit_code:
+            return head + call + "\n"
+        return (head + "$__sc_ok = $true\n" + call + "\n"
                 + '"' + EXIT_MARK + '$(if ($__sc_ok) { 0 } elseif ($LASTEXITCODE) '
                 + '{ $LASTEXITCODE } else { 1 })"\n')
+    if not exit_code:
+        return head + command
     if shell == "cmd":
         return head + body + "\r\n@echo " + EXIT_MARK + "%ERRORLEVEL%\r\n"
     return head + body + '\necho "' + EXIT_MARK + '$?"\n'
@@ -803,8 +849,8 @@ def explain(res, name, timeout, exit_expected):
     code = res.get("exit")
     if code is None:
         if exit_expected:
-            note("NOTE: exit code not reported (the command ended with 'exit', or its output was "
-                 "cut short).")
+            note("NOTE: exit code not reported (the command ended with 'exit' or a terminating "
+                 "error such as 'throw', or its output was cut short).")
         return 0
     if code != 0:
         note("# remote exit code: " + str(code))
@@ -848,13 +894,16 @@ def version_line():
 
 
 def run_command(client, ident, command, shell=None, timeout=60, force=False, allow=(),
-                max_output=MAX_OUTPUT_CHARS, exit_code=True):
+                max_output=MAX_OUTPUT_CHARS, exit_code=True, script_args=()):
     print(version_line(), file=sys.stderr)
     refuse_if_denied(command, allow, force)
+    refuse_if_denied(" ".join(script_args), allow, force)
     s = resolve(client, ident, for_command=True)
     sid, name = s["SessionID"], s.get("Name", ident)
     sh = default_shell(s, shell)
-    res = execute(client, sid, wrap_command(command, sh, timeout, max_output, exit_code), timeout)
+    need_powershell(script_args, sh, name)
+    res = execute(client, sid, wrap_command(command, sh, timeout, max_output, exit_code,
+                                            script_args), timeout)
     audit("run", target=ident, session=sid, name=name, shell=sh, sha256=digest(command),
           chars=len(command), allow=",".join(sorted(allow)) or None, force=force or None,
           status=res["status"], exit=res["exit"])
@@ -872,6 +921,7 @@ def capture_command(client, sid, command, shell="powershell", timeout=25):
 
 
 def cmd_run(client, args):
+    args, script_args = split_script_args(args)
     opts, pos = parse_flags(args, RUN_SPEC, RUN_USAGE)
     if not pos or len(pos) > 2:
         die(RUN_USAGE, EXIT_USAGE)
@@ -880,9 +930,10 @@ def cmd_run(client, args):
     shell = shell or implied
     allow = parse_allow(opts["allow"])
     if opts["detach"]:
-        return detach(client, pos[0], command, shell, allow, opts["force"], opts["job_hours"] or 4)
+        return detach(client, pos[0], command, shell, allow, opts["force"], opts["job_hours"] or 4,
+                      script_args)
     return run_command(client, pos[0], command, shell, timeout, opts["force"], allow,
-                       max_output, not opts["no_exit_code"])
+                       max_output, not opts["no_exit_code"], script_args)
 
 
 # --------------------------------------------------------------------- run-many
@@ -909,6 +960,7 @@ RUN_MANY_USAGE = ('usage: sc.py run-many <t1,t2,...|@listfile> "<command>" | --f
 def cmd_run_many(client, args):
     spec = {k: v for k, v in RUN_SPEC.items() if k not in ("--detach", "--job-hours")}
     spec["--pace"] = "float"
+    args, script_args = split_script_args(args)
     opts, pos = parse_flags(args, spec, RUN_MANY_USAGE)
     if not pos or len(pos) > 2:
         die(RUN_MANY_USAGE, EXIT_USAGE)
@@ -923,6 +975,9 @@ def cmd_run_many(client, args):
     exit_code = not opts["no_exit_code"]
     print(version_line(), file=sys.stderr)
     refuse_if_denied(command, allow, opts["force"])  # once, before anything is sent
+    refuse_if_denied(" ".join(script_args), allow, opts["force"])
+    if shell:
+        need_powershell(script_args, shell)
 
     rows = []
     for n, t in enumerate(targets):
@@ -939,7 +994,13 @@ def cmd_run_many(client, args):
             continue
         sid, name = s["SessionID"], s.get("Name", t)
         sh = default_shell(s, shell)
-        res = execute(client, sid, wrap_command(command, sh, timeout, max_output, exit_code), timeout)
+        if script_args and sh != "powershell":
+            print("===== " + name + " (" + sid + ") =====")
+            print("(not run) arguments after -- are only for PowerShell; this would use " + sh)
+            rows.append((name, "not run", None))
+            continue
+        res = execute(client, sid, wrap_command(command, sh, timeout, max_output, exit_code,
+                                                script_args), timeout)
         audit("run-many", target=t, session=sid, name=name, shell=sh, sha256=digest(command),
               chars=len(command), allow=",".join(sorted(allow)) or None,
               force=opts["force"] or None, status=res["status"], exit=res["exit"])
@@ -1186,11 +1247,11 @@ def new_job_id():
     return "sc-" + datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + secrets.token_hex(2)
 
 
-def detach_script(job_id, command, shell, hours):
+def detach_script(job_id, command, shell, hours, script_args=()):
     if shell == "powershell":
         ext, payload = ".ps1", b"\xef\xbb\xbf" + command.encode("utf-8")  # BOM: PS 5.1 reads UTF-8
         invoke = ("& powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $d '"
-                  + job_id + ".ps1')")
+                  + job_id + ".ps1')" + (" " + ps_args(script_args) if script_args else ""))
     else:
         ext, payload = ".cmd", command.encode("utf-8")
         invoke = "& cmd.exe /c (Join-Path $d '" + job_id + ".cmd')"
@@ -1217,8 +1278,9 @@ def detach_script(job_id, command, shell, hours):
             + "'SC_JOB_STARTED ' + $(if ($t) { $t.State } else { 'finished' })\n")
 
 
-def detach(client, ident, command, shell, allow, force, hours):
+def detach(client, ident, command, shell, allow, force, hours, script_args=()):
     refuse_if_denied(command, allow, force)
+    refuse_if_denied(" ".join(script_args), allow, force)
     s = resolve(client, ident, for_command=True)
     sid, name = s["SessionID"], s.get("Name", ident)
     if not is_windows(s):
@@ -1227,8 +1289,9 @@ def detach(client, ident, command, shell, allow, force, hours):
     shell = shell or "cmd"
     if shell not in ("cmd", "powershell"):
         die("ERROR: --detach supports --shell cmd or powershell", EXIT_USAGE)
+    need_powershell(script_args, shell, name)
     job_id = new_job_id()
-    res = execute(client, sid, wrap_command(detach_script(job_id, command, shell, hours),
+    res = execute(client, sid, wrap_command(detach_script(job_id, command, shell, hours, script_args),
                                             "powershell", 60, exit_code=False), 60)
     m = re.search(r"SC_JOB_(STARTED|UNSAFE) ?(.*)", res["output"] or "")
     audit("detach", target=ident, session=sid, name=name, shell=shell, sha256=digest(command),
