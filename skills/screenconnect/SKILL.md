@@ -18,6 +18,8 @@ python3 {SKILL_DIR}/scripts/sc.py online [<id> ...] [--wide]   # who is connecte
 python3 {SKILL_DIR}/scripts/sc.py push <id> <localfile> <C:\remote\path | /remote/path>   # copy a file, hash-verified
 python3 {SKILL_DIR}/scripts/sc.py run <id> "<command>" --detach  # long job as a SYSTEM task
 python3 {SKILL_DIR}/scripts/sc.py job <id> <jobID> [--wait 600]  # read a detached job
+python3 {SKILL_DIR}/scripts/sc.py doctor [--local-only]       # check setup and API access
+python3 {SKILL_DIR}/scripts/sc.py audit list [--json]         # read the local audit log
 ```
 
 On Windows, use `python` (or `py -3`) instead of `python3`. `sc.py --help` prints every option.
@@ -28,7 +30,7 @@ Config discovery (first match wins): `SC_URL`+`SC_AUTH_SECRET` env vars, `CLAUDE
 
 ## If it is not configured yet
 
-Any command will exit with "ScreenConnect is not configured yet." Do not guess at values or go looking for a config file. Ask the user for two things:
+Commands that contact ScreenConnect require configuration. Use `sc.py doctor --local-only` to see which configuration source was selected. When configuration is missing, ask the user for two things:
 
 1. Their ScreenConnect URL (e.g. `https://example.screenconnect.com`)
 2. The **RESTfulAuthenticationSecret** set on the RESTful API Manager extension (Admin > Extensions > RESTful API Manager)
@@ -160,6 +162,7 @@ This captures the back-and-forth that otherwise evaporates (the user's symptom d
 - To override, get the operator's confirmation of the exact command, then pass `--allow <category>` for just the categories that matched. Use `--force` (skips every check) only when the operator explicitly asks for it. Treat the denylist as a floor, not permission: a command that passes it can still need confirming.
 - Matching is on the command text, so a pattern inside a string or a script being written to disk counts too. That's deliberate: a script that will restart the machine later still restarts it.
 - Every command-sending action is recorded in a local audit log (`~/.config/screenconnect/audit.log`) as hashes, never command text. Don't turn it off unless the operator asks.
+- Use `sc.py audit list` to review local records. Filter by `--since`, `--until`, `--target`, `--action`, or `--result`. Use `--json` for JSON Lines.
 
 ## Read-only diagnostics (`scripts/diag.py`)
 
@@ -167,10 +170,13 @@ Curated read-only playbooks that run a machine through a known set of checks and
 
 ```bash
 python3 {SKILL_DIR}/scripts/diag.py <check> <serial|name|sessionID> [--days N] [--provider NAME] [--timeout S]
+python3 {SKILL_DIR}/scripts/diag.py health <serial|name|sessionID> --json [--timeout S]
 ```
 
 Checks: `eventlogs` (error/warning triage by source over N days; `--provider` drills into one source), `sound`, `onedrive`, `network`, `health`, `memory`, `drivers`, `battery` (laptop battery report/health: charge, % of design capacity, powercfg cycle count). All read-only. Remediation (restart spooler, onedrive /reset, driver installs) is never here - those run via `sc.py run` after the operator confirms the exact command.
 
-The `onedrive`/`health` checks include a "synced libraries" sub-check that flags SharePoint/Teams libraries synced via the OneDrive Sync button (as opposed to Add shortcut/Files On-Demand). It's tenant-specific: edit `_ORG_SYNC_FOLDERS` near the top of `diag.py` to your organization's top-level sync-folder name(s), or leave it blank to skip that sub-check.
+Use `health --json` when a caller needs structured results for the built-in health probes. Read each probe's collection status before interpreting its data. A partial report can include both successful and unavailable probes.
+
+The text `onedrive` and `health` reports include a tenant-specific check for SharePoint and Teams libraries synced through the OneDrive Sync button. To set the folder names it looks for, edit `_ORG_SYNC_FOLDERS` near the top of `diag.py`.
 
 Not included in this package: a network/print-triage check that cross-references office WAN/LAN inventory and a printer asset list. That check depended on company-specific network documentation and a printer-asset inventory, neither of which travels with this plugin. It's a reasonable thing to build for a new environment (pattern: read the device's LAN/WAN IP from the ScreenConnect session, match to a known office subnet, ping the office printer, verdict on reachability) but needs your own inventory source wired in.

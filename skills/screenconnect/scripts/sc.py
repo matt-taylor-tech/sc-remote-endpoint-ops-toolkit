@@ -27,6 +27,9 @@ Commands:
   job <target> --list
   chat <target> [--since <iso8601>]               chat transcript
   setup --url <url> --secret <secret> [...]       write the config file
+  doctor [--local-only]                          check toolkit version and configuration
+  audit list [--since <iso8601>] [--until <iso8601>] [--target <name-or-id>]
+      [--action <action>] [--result <status-or-exit-code>] [--json]
 
   <target> is a sessionID GUID, a serial number, or a machine name.
 
@@ -90,6 +93,7 @@ import socket
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 
@@ -184,6 +188,7 @@ PLACEHOLDER_SERIALS = {
 DEFAULT_EXTENSION_ID = "2d558935-686a-4bd0-9991-07539f5fe749"
 USER_CONFIG_PATH = os.path.expanduser(
     "~/.config/screenconnect/screenconnect-config.json")
+CONFIG_PROBE = ("GetSessionsByFilter", ["Name = '__sc_setup_probe__'"])
 
 NOT_CONFIGURED = """ScreenConnect is not configured yet.
 
@@ -349,23 +354,35 @@ def normalize_url(url):
     return url
 
 
-def find_config():
+def config_source():
     # Inline env first (CI / serverless), then plugin user config, then files.
     cfg = _env_config()
     if cfg:
-        return cfg
-    candidates = []
-    env = os.environ.get("SC_CONFIG")
-    if env:
-        candidates.append(env)
-    candidates += sorted(glob.glob(
-        "/sessions/*/mnt/Configs/screenconnect-config.json"))
-    candidates.append(USER_CONFIG_PATH)
-    for c in candidates:
-        if c and os.path.isfile(c):
-            with open(c) as f:
-                return json.load(f)
-    die("ERROR: " + NOT_CONFIGURED.format(script=sys.argv[0]))
+        sources = {"environment" if os.environ.get(key) else "plugin user config"
+                   for key in ("SC_URL", "SC_AUTH_SECRET")}
+        return " + ".join(sorted(sources)), cfg
+    mounts = sorted(glob.glob("/sessions/*/mnt/Configs/screenconnect-config.json"))
+    candidates = [("SC_CONFIG", os.environ.get("SC_CONFIG")),
+                  *(("Cowork mount", path) for path in mounts),
+                  ("default config file", USER_CONFIG_PATH)]
+    for source, path in candidates:
+        if path and os.path.isfile(path):
+            return source, path
+    return "none", None
+
+
+def load_config(value):
+    if isinstance(value, str):
+        with open(value, encoding="utf-8") as f:
+            return json.load(f)
+    return value
+
+
+def find_config():
+    _, value = config_source()
+    if value is None:
+        die("ERROR: " + NOT_CONFIGURED.format(script=sys.argv[0]))
+    return load_config(value)
 
 
 def write_config(cfg, path):
@@ -413,7 +430,7 @@ def do_setup(args):
 
     if verify:
         try:
-            Client(cfg).request("GetSessionsByFilter", ["Name = '__sc_setup_probe__'"])
+            Client(cfg).request(*CONFIG_PROBE)
         except SCError as e:
             if e.kind == "network":
                 die("ERROR: nothing reached the instance, so the secret was never "
@@ -443,9 +460,10 @@ class SCError(Exception):
     """kind is 'http' (the instance answered with an error) or 'network'
     (nothing reached the instance)."""
 
-    def __init__(self, kind, message):
+    def __init__(self, kind, message, status=None):
         super().__init__(message)
         self.kind = kind
+        self.status = status
 
 
 # 429 and 503 mean the request was turned away, so any method may be retried.
@@ -475,7 +493,7 @@ class Client:
                 pass
         return self.retry_base * (2 ** (attempt - 1))
 
-    def request(self, method, body):
+    def request(self, method, body, timeout=90):
         """Raise SCError on failure. Use call() for the exit-on-error behavior."""
         url = self.base + "/App_Extensions/" + self.ext + "/Service.ashx/" + method
         data = json.dumps(body).encode()
@@ -484,7 +502,7 @@ class Client:
         while True:
             req = urllib.request.Request(url, data=data, method="POST", headers=self.headers)
             try:
-                with urllib.request.urlopen(req, timeout=90) as r:
+                with urllib.request.urlopen(req, timeout=timeout) as r:
                     return r.read().decode("utf-8", "replace")
             except urllib.error.HTTPError as e:
                 detail = e.read().decode("utf-8", "replace")[:500]
@@ -493,7 +511,7 @@ class Client:
                     attempt += 1
                     time.sleep(self._delay(attempt, e.headers.get("Retry-After")))
                     continue
-                raise SCError("http", str(e.code) + " " + method + "\n" + detail)
+                raise SCError("http", str(e.code) + " " + method + "\n" + detail, e.code)
             except urllib.error.URLError as e:
                 transient = isinstance(e.reason, (socket.timeout, TimeoutError, ConnectionResetError))
                 if read and transient and attempt < self.retries:
@@ -518,6 +536,53 @@ class Client:
     def call_json(self, method, body):
         txt = self.call(method, body).strip()
         return json.loads(txt) if txt else None
+
+
+def do_doctor(args):
+    usage = "usage: sc.py doctor [--local-only]"
+    opts, pos = parse_flags(args, {"--local-only": "bool"}, usage)
+    if pos:
+        die(usage, EXIT_USAGE)
+
+    source, value = config_source()
+    print("Toolkit version: " + plugin_version())
+    print("Configuration source: " + source)
+    if value is None:
+        die("ERROR: ScreenConnect configuration is missing. Run sc.py setup or set SC_URL and SC_AUTH_SECRET.")
+    try:
+        cfg = load_config(value)
+        if not isinstance(cfg, dict) or not all(
+            isinstance(cfg.get(key), str) and cfg[key].strip()
+            for key in ("url", "extension_id", "auth_secret")
+        ):
+            raise ValueError
+        parsed = urllib.parse.urlsplit(cfg["url"])
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username is not None:
+            raise ValueError
+        if parsed.port == 0 or not isinstance(cfg.get("origin", ""), str):
+            raise ValueError
+    except (OSError, ValueError):
+        die("ERROR: The selected configuration is unreadable or invalid.")
+
+    if opts["local_only"]:
+        print("API read: skipped (--local-only)")
+        return 0
+    try:
+        result = Client(cfg, retries=0).request(*CONFIG_PROBE, timeout=10)
+        if not isinstance(json.loads(result), list):
+            raise ValueError
+    except SCError as e:
+        if e.kind == "network":
+            if "tunnel connection failed" in str(e).lower():
+                die("ERROR: Proxy tunnel failed before the API could check credentials.")
+            die("ERROR: Could not connect to the ScreenConnect API.")
+        if e.status in (401, 403):
+            die(f"ERROR: API access rejected (HTTP {e.status}). Check the secret and allowed origin.")
+        die(f"ERROR: API read failed (HTTP {e.status}). Check the extension and instance status.")
+    except (ValueError, OSError):
+        die("ERROR: The API read failed or returned an unexpected response.")
+    print("API read: successful")
+    return 0
 
 
 # --------------------------------------------------------------------- audit log
@@ -557,6 +622,76 @@ def audit(action, **fields):
             note("NOTE: couldn't write the audit log (" + str(e) + "). Set SC_AUDIT_LOG to "
                  "another path, or to 'off'.")
             _audit_warned = True
+
+
+AUDIT_FIELDS = ("time", "action", "target", "name", "session", "status", "exit",
+                "shell", "sha256", "chars", "bytes", "allow", "force", "job")
+
+
+def audit_time(value):
+    if value.endswith("Z"):
+        value = value[:-1] + "+00:00"
+    stamp = datetime.fromisoformat(value)
+    return stamp if stamp.tzinfo else stamp.replace(tzinfo=timezone.utc)
+
+
+def do_audit(args):
+    usage = ("usage: sc.py audit list [--since <iso8601>] [--until <iso8601>] "
+             "[--target <name-or-id>] [--action <action>] "
+             "[--result <status-or-exit-code>] [--json]")
+    spec = {flag: "str" for flag in ("--since", "--until", "--target", "--action", "--result")}
+    opts, pos = parse_flags(args, {**spec, "--json": "bool"}, usage)
+    if pos != ["list"]:
+        die(usage, EXIT_USAGE)
+    try:
+        since = audit_time(opts["since"]) if opts["since"] is not None else None
+        until = audit_time(opts["until"]) if opts["until"] is not None else None
+    except ValueError:
+        die("ERROR: --since and --until expect ISO 8601 dates or timestamps.", EXIT_USAGE)
+    if since and until and since > until:
+        die("ERROR: --since must be at or before --until.", EXIT_USAGE)
+
+    filters = (
+        (opts["target"], ("target", "name", "session")),
+        (opts["action"], ("action",)),
+        (opts["result"], ("status", "exit")),
+    )
+    path = audit_path()
+    if path is None:
+        note("NOTE: audit logging is disabled (SC_AUDIT_LOG).")
+        return 0
+    invalid = 0
+    try:
+        with open(path, "rb") as records:
+            for line in records:
+                try:
+                    record = json.loads(line)
+                    if not isinstance(record, dict) or not isinstance(record.get("action"), str):
+                        raise ValueError
+                    stamp = audit_time(record["time"])
+                except (KeyError, AttributeError, ValueError):
+                    invalid += 1
+                    continue
+                if (since and stamp < since) or (until and stamp > until):
+                    continue
+                if any(value is not None and value.casefold() not in
+                       {str(record[k]).casefold() for k in keys if k in record}
+                       for value, keys in filters):
+                    continue
+                fields = {key: record[key] for key in AUDIT_FIELDS if key in record}
+                if opts["json"]:
+                    print(json.dumps(fields))
+                else:
+                    details = "  ".join(f"{key}={json.dumps(value)}" for key, value in fields.items()
+                                        if key not in ("time", "action"))
+                    print(f'{stamp.isoformat()}  {json.dumps(record["action"])}  {details}')
+    except FileNotFoundError:
+        note("NOTE: no audit log exists yet.")
+    except OSError:
+        die("ERROR: could not read the local audit log.")
+    if invalid:
+        note(f"NOTE: skipped {invalid} malformed audit record(s).")
+    return 0
 
 
 # --------------------------------------------------------------------- sessions
@@ -884,7 +1019,9 @@ def plugin_version():
                         ".claude-plugin", "plugin.json")
     try:
         with open(path, encoding="utf-8") as f:
-            return json.load(f).get("version") or "unknown"
+            manifest = json.load(f)
+        version = manifest.get("version") if isinstance(manifest, dict) else None
+        return version if isinstance(version, str) and version else "unknown"
     except (OSError, ValueError):
         return "unknown"
 
@@ -1499,9 +1636,10 @@ def main():
     if sys.argv[1] in ("--version", "version"):
         print(version_line())
         return 0
-    if sys.argv[1] == "setup":
-        do_setup(sys.argv[2:])
-        return 0
+    local_commands = {"setup": do_setup, "doctor": do_doctor, "audit": do_audit}
+    local = local_commands.get(sys.argv[1])
+    if local:
+        return local(sys.argv[2:]) or 0
     handler = COMMANDS.get(sys.argv[1])
     client = Client(find_config())
     if handler:
