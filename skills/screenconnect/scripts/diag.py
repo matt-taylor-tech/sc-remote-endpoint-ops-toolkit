@@ -7,6 +7,7 @@ a machine by serial, machine name, or sessionID (same resolution as sc.py).
 
 Usage:
   python3 diag.py <check> <serial|name|sessionID> [--days N] [--provider NAME] [--timeout S]
+  python3 diag.py health <serial|name|sessionID> --json [--timeout S]
   (On Windows, run it with `python` or `py -3`.)
 
 Checks (all READ-ONLY):
@@ -30,11 +31,18 @@ after the operator confirms the exact command. See SKILL.md.
 Note: commands run as the ScreenConnect agent (SYSTEM). Per-user state (OneDrive)
 is read from the loaded user hives under HKEY_USERS and C:\\Users\\*, best-effort.
 """
+import json
 import os
+import secrets
 import subprocess
 import sys
+from datetime import datetime, timezone
+from pathlib import Path
 
 SC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sc.py")
+HEALTH_JSON_SCRIPT = Path(__file__).with_name("health-json.ps1")
+HEALTH_PROBES = ("uptime", "memory", "disks", "commit", "top_memory", "disk_health",
+                 "pending_reboot", "pending_updates")
 
 
 def ps_eventlogs(days, provider):
@@ -255,17 +263,85 @@ def utf8_stdio():
             pass
 
 
+def run_probe(target, script, timeout):
+    # sys.executable also works on Windows hosts without a python3 executable.
+    # Individual probe failures are reported in the diagnostic output.
+    return subprocess.run([sys.executable, SC, "run", target, "-", "--shell", "powershell",
+                           "--timeout", str(timeout), "--no-exit-code"],
+                          input=script, capture_output=True, text=True, encoding="utf-8",
+                          errors="replace", timeout=timeout + 30)
+
+
+def read_health_report(output, marker):
+    matches = [line[len(marker):] for line in output.splitlines() if line.startswith(marker)]
+    if len(matches) != 1:
+        raise ValueError("expected one health report")
+    report = json.loads(matches[0])
+    stamp = report["collected_at"]
+    if not stamp.endswith("Z") or datetime.fromisoformat(stamp[:-1] + "+00:00").utcoffset() != timezone.utc.utcoffset(None):
+        raise ValueError("expected a UTC timestamp")
+    probes = report["probes"]
+    if set(probes) != set(HEALTH_PROBES):
+        raise ValueError("expected all health probes")
+    for probe in probes.values():
+        status = probe["status"]
+        if status not in ("ok", "unavailable", "failed") or (
+            status == "ok" and not isinstance(probe.get("data"), dict)
+        ):
+            raise ValueError("invalid probe result")
+    return stamp, probes
+
+
+def health_json(target, timeout):
+    result = {"schema_version": 1, "check": "health", "target": target,
+              "collected_at": None, "status": "failed",
+              "probes": {name: {"status": "not_collected"} for name in HEALTH_PROBES}}
+    exit_code = 1
+    marker = "SC_HEALTH_" + secrets.token_hex(12) + " "
+    try:
+        script = "$marker = '" + marker + "'\n" + HEALTH_JSON_SCRIPT.read_text(encoding="utf-8")
+    except OSError:
+        result["error"] = "health_script_unavailable"
+    else:
+        try:
+            reply = run_probe(target, script, timeout)
+        except subprocess.TimeoutExpired:
+            result["error"] = "collection_timeout"
+            exit_code = 124
+        except OSError:
+            result["error"] = "collection_failed"
+        else:
+            if reply.returncode:
+                result["error"] = "collection_failed"
+                exit_code = reply.returncode
+            else:
+                try:
+                    result["collected_at"], result["probes"] = read_health_report(reply.stdout, marker)
+                except (ValueError, KeyError, TypeError, AttributeError):
+                    result["error"] = "invalid_health_output"
+                else:
+                    succeeded = sum(probe["status"] == "ok" for probe in result["probes"].values())
+                    if succeeded:
+                        result["status"] = "ok" if succeeded == len(HEALTH_PROBES) else "partial"
+                        exit_code = 0
+    print(json.dumps(result))
+    return exit_code
+
+
 def main():
     utf8_stdio()
     args = sys.argv[1:]
     if len(args) < 2:
         sys.exit(__doc__)
     check, target = args[0], args[1]
-    days, provider, timeout = 7, None, None
+    days, provider, timeout, as_json = 7, None, None, False
     i = 2
     while i < len(args):
         flag = args[i]
-        if flag in ("--days", "--provider", "--timeout"):
+        if flag == "--json":
+            as_json = True
+            i += 1
+        elif flag in ("--days", "--provider", "--timeout"):
             if i + 1 >= len(args):
                 sys.exit("ERROR: " + flag + " needs a value")
             value = args[i + 1]
@@ -285,6 +361,10 @@ def main():
             sys.exit("ERROR: unknown option " + flag)
     if check not in BUILDERS:
         sys.exit("unknown check '" + check + "'. Options: " + ", ".join(BUILDERS))
+    if as_json:
+        if check != "health":
+            sys.exit("ERROR: --json is available for the health check.")
+        return health_json(target, timeout or BUILDERS[check][1])
     if check == "eventlogs":
         ps = ps_eventlogs(days, provider); default_to = 40
     else:
@@ -305,4 +385,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

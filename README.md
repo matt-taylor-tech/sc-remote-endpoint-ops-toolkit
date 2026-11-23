@@ -140,6 +140,30 @@ Either way, you still need the config step above (`screenconnect-config.json` or
 
 On Windows, run the scripts with `python` (or `py -3`); `python3` is often missing there.
 
+### Setup diagnostics
+
+`sc.py doctor` reports the installed toolkit version and the configuration source
+selected by the normal discovery order. It tests a read-only API request and
+reports connectivity, proxy tunnel, and API access failures separately. Use
+`sc.py doctor --local-only` to check configuration without a network request.
+Both modes leave configuration files untouched and omit credential values.
+Missing or invalid configuration and unsuccessful API checks exit with code 255.
+
+### Structured Windows health checks
+
+`diag.py health <target> --json` emits one JSON object with `schema_version`,
+`check`, `target`, `collected_at` in UTC, an overall `status`, and a `probes`
+object. Each probe reports `ok`, `unavailable`, or `failed`. A completed
+`ok` probe has a `data` object with its observations, such as available memory
+in bytes or the pending-reboot flags. The probe status describes collection
+success. Inspect the data for the observed health of the endpoint.
+
+The command exits 0 for both `ok` and `partial` reports. A collection failure
+exits nonzero, sets `collected_at` to null, and marks uncollected probes
+`not_collected`. If the endpoint returns a report and every probe fails or is
+unavailable, the command preserves those statuses and exits nonzero. The text
+playbook remains the default.
+
 ### Exit codes
 
 | Code | Meaning |
@@ -164,6 +188,15 @@ Reads are retried with backoff on 429/502/503/504, and a session lookup that com
 ### Audit log
 
 Every command-sending action (run, run-many, push, detach, job cleanup, and raw action methods) appends a JSON line to `~/.config/screenconnect/audit.log`: time, target, session, the SHA-256 and length of what was sent, and the result. Command text and output are never written, because they can contain secrets. Set `SC_AUDIT_LOG=<path>` to move it or `SC_AUDIT_LOG=off` to turn it off. Keep in mind that ScreenConnect itself stores every command and its output in the session's event history on the server.
+
+`sc.py audit list` reads that log locally without ScreenConnect configuration.
+Use `--target` to match a recorded target, session name, or session ID,
+`--action` to match the action, and `--result` to match a status or numeric exit
+code. Matches are exact and case-insensitive. `--since` and `--until` are
+inclusive ISO 8601 bounds. Dates and times without an offset are interpreted
+as UTC, and a date starts at midnight. Use `--json` for JSON Lines output.
+Missing and disabled logs return no rows. Malformed records are skipped with
+a count on stderr.
 
 ## Notes
 

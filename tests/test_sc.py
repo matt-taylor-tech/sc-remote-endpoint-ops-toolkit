@@ -5,6 +5,7 @@ No live ScreenConnect instance, network access or third-party packages needed.
 """
 import base64
 import hashlib
+import io
 import json
 import os
 import re
@@ -13,6 +14,8 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
+from unittest.mock import patch
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SCRIPTS = os.path.join(HERE, "..", "skills", "screenconnect", "scripts")
@@ -20,6 +23,7 @@ SC = os.path.join(SCRIPTS, "sc.py")
 sys.path.insert(0, HERE)
 sys.path.insert(0, SCRIPTS)
 
+import diag  # noqa: E402
 import sc  # noqa: E402
 from stub import Stub, make_session  # noqa: E402
 
@@ -47,17 +51,170 @@ class Base(unittest.TestCase):
         self.stub.close()
 
     def sc(self, *args, stdin=None, env=None):
+        return self.cli(SC, *args, stdin=stdin, env=env)
+
+    def cli(self, script, *args, stdin=None, env=None):
         e = {k: v for k, v in os.environ.items()
              if not k.startswith(("SC_", "CLAUDE_PLUGIN_OPTION_SC_"))}
         e.update({"SC_URL": self.stub.url, "SC_AUTH_SECRET": "test-secret",
                   "SC_POLL_INTERVAL": "0.05", "SC_RETRY_BASE": "0.01",
                   "SC_AUDIT_LOG": self.audit})
         e.update(env or {})
-        return subprocess.run([sys.executable, SC] + list(args), input=stdin, env=e,
+        return subprocess.run([sys.executable, script] + list(args), input=stdin, env=e,
                               capture_output=True, text=True, encoding="utf-8", timeout=60)
 
     def sent(self):
         return self.stub.commands[-1][1]
+
+
+class TestDoctor(Base):
+    def test_reports_version_and_only_uses_a_read(self):
+        result = self.sc("doctor")
+        with open(os.path.join(HERE, "..", ".claude-plugin", "plugin.json"), encoding="utf-8") as f:
+            version = json.load(f)["version"]
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(f"Toolkit version: {version}", result.stdout)
+        self.assertIn("Configuration source: environment", result.stdout)
+        self.assertEqual(self.stub.calls, ["GetSessionsByFilter"])
+        self.assertFalse(os.path.exists(self.audit))
+
+    def test_local_only_preserves_config_precedence_without_network(self):
+        result = self.sc("doctor", "--local-only", env={
+            "CLAUDE_PLUGIN_OPTION_SC_URL": "https://ignored.example",
+            "CLAUDE_PLUGIN_OPTION_SC_AUTH_SECRET": "ignored-secret",
+        })
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Configuration source: environment", result.stdout)
+        self.assertEqual(self.stub.calls, [])
+        self.assertNotIn("secret", result.stdout)
+
+        result = self.sc("doctor", "--local-only", env={
+            "SC_AUTH_SECRET": "", "CLAUDE_PLUGIN_OPTION_SC_AUTH_SECRET": "test-secret",
+        })
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Configuration source: environment + plugin user config", result.stdout)
+
+    def test_invalid_file_reports_source_without_echoing_contents(self):
+        path = os.path.join(self.tmp, "config.json")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("private-test-content")
+        result = self.sc("doctor", "--local-only", env={
+            "SC_URL": "", "SC_AUTH_SECRET": "", "SC_CONFIG": path,
+        })
+        self.assertEqual(result.returncode, sc.EXIT_ERROR)
+        self.assertIn("Configuration source: SC_CONFIG", result.stdout)
+        self.assertIn("invalid", result.stderr)
+        self.assertNotIn("private-test-content", result.stdout + result.stderr)
+        self.assertEqual(self.stub.calls, [])
+
+    def test_http_rejection_and_proxy_errors_are_distinct(self):
+        self.stub.fail.append(("GetSessionsByFilter", 403))
+        result = self.sc("doctor")
+        self.assertEqual(result.returncode, sc.EXIT_ERROR)
+        self.assertIn("API access rejected (HTTP 403)", result.stderr)
+        self.assertNotIn("stub failure", result.stderr)
+
+        cfg = {"url": self.stub.url, "extension_id": sc.DEFAULT_EXTENSION_ID, "auth_secret": "test-secret"}
+        for reason, message in (("Tunnel connection failed: 403 Forbidden", "Proxy tunnel failed"),
+                                ("host unreachable", "Could not connect")):
+            with self.subTest(reason=reason), patch.object(sc, "config_source", return_value=("SC_CONFIG", cfg)), \
+                 patch.object(sc.urllib.request, "urlopen", side_effect=sc.urllib.error.URLError(reason)), \
+                 redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()) as errors:
+                with self.assertRaises(SystemExit) as failure:
+                    sc.do_doctor([])
+                self.assertEqual(failure.exception.code, sc.EXIT_ERROR)
+                self.assertIn(message, errors.getvalue())
+
+
+class TestAuditList(Base):
+    def test_filters_old_records_and_ignores_partial_tail(self):
+        first = {"time": "2026-01-02T10:00:00Z", "target": "PC-ONE", "name": "Example Windows",
+                 "session": SID_A, "action": "run", "status": "ok", "exit": 7, "sha256": "a" * 64}
+        without_config = {"SC_URL": "", "SC_AUTH_SECRET": "", "SC_CONFIG": self.audit}
+        with open(self.audit, "w", encoding="utf-8") as f:
+            for record in (first | {"time": "2026-01-01T10:00:00Z"},
+                           first | {"target": "OTHER", "name": "Other", "session": SID_B},
+                           first | {"action": "run-many"},
+                           first | {"exit": 0},
+                           first | {"command": "private-test-content"}):
+                f.write(json.dumps(record) + "\n")
+            f.write('{"time":')
+        result = self.sc("audit", "list", "--json", "--since", "2026-01-02T05:00:00-05:00",
+                         "--until", "2026-01-02T10:00:00Z", "--target", "example windows",
+                         "--action", "RUN", "--result", "7", env=without_config)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual([json.loads(line) for line in result.stdout.splitlines()], [first])
+        self.assertIn("skipped 1 malformed", result.stderr)
+        self.assertEqual(self.stub.calls, [])
+
+        result = self.sc("audit", "list", "--target", SID_A, "--result", "ok", env=without_config)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('status="ok"', result.stdout)
+        self.assertNotIn("private-test-content", result.stdout)
+
+    def test_missing_disabled_and_invalid_bounds(self):
+        for env, message in (({}, "no audit log"), ({"SC_AUDIT_LOG": "off"}, "disabled")):
+            result = self.sc("audit", "list", "--json", env=env)
+            self.assertEqual(result.returncode, 0)
+            self.assertEqual(result.stdout, "")
+            self.assertIn(message, result.stderr)
+        for bounds in (("--since", "yesterday"), ("--since", "2026-01-02", "--until", "2026-01-01")):
+            result = self.sc("audit", "list", *bounds)
+            self.assertEqual(result.returncode, sc.EXIT_USAGE)
+
+
+class TestHealthJson(Base):
+    def reply(self, status):
+        def respond(sid, script):
+            marker = re.search(r"\$marker = '(SC_HEALTH_[0-9a-f]+ )'", script)[1]
+            probes = {name: {"status": "ok", "data": {}} for name in diag.HEALTH_PROBES}
+            probes["uptime"] = {"status": "ok", "data": {"seconds": 42}}
+            if status == "partial":
+                probes["commit"] = {"status": "unavailable"}
+                probes["pending_updates"] = {"status": "failed"}
+            elif status == "failed":
+                probes = {name: {"status": "failed"} for name in diag.HEALTH_PROBES}
+            return marker + json.dumps({"collected_at": "2026-01-02T10:00:00.123Z", "probes": probes})
+        return respond
+
+    def test_complete_partial_and_all_failed_reports(self):
+        for status, code in (("ok", 0), ("partial", 0), ("failed", 1)):
+            with self.subTest(status=status):
+                self.stub.responder = self.reply(status)
+                result = self.cli(diag.__file__, "health", "PC-ONE", "--json", "--timeout", "8")
+                self.assertEqual(result.returncode, code, result.stderr)
+                report = json.loads(result.stdout)
+                self.assertEqual(report["schema_version"], 1)
+                self.assertEqual(report["status"], status)
+                self.assertEqual(report["collected_at"], "2026-01-02T10:00:00.123Z")
+                if status == "partial":
+                    self.assertEqual(report["probes"]["commit"], {"status": "unavailable"})
+                    self.assertEqual(report["probes"]["pending_updates"], {"status": "failed"})
+                    self.assertEqual(report["probes"]["uptime"]["data"]["seconds"], 42)
+                self.assertIn("#timeout=8000", self.sent())
+
+    def test_unmatched_output_and_offline_target(self):
+        self.stub.responder = echo_exit(text="unrelated diagnostic output")
+        result = self.cli(diag.__file__, "health", "PC-ONE", "--json")
+        report = json.loads(result.stdout)
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(report["error"], "invalid_health_output")
+        self.assertIsNone(report["collected_at"])
+        self.assertEqual(report["probes"]["uptime"], {"status": "not_collected"})
+
+        self.stub.set_online(SID_A, False)
+        result = self.cli(diag.__file__, "health", "PC-ONE", "--json")
+        self.assertEqual(result.returncode, sc.EXIT_TARGET)
+        self.assertEqual(json.loads(result.stdout)["error"], "collection_failed")
+
+    def test_text_default_and_json_is_health_only(self):
+        result = self.cli(diag.__file__, "health", "PC-ONE")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("hello", result.stdout)
+        self.assertIn("Uptime:", self.sent())
+        result = self.cli(diag.__file__, "network", "PC-ONE", "--json")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(len(self.stub.commands), 1)
 
 
 class TestRun(Base):
